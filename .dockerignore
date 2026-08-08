@@ -1,6 +1,6 @@
 .git
 .github
-.multiegg
+.pcvm
 bin
 dist
 *.test
