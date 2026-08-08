@@ -43,7 +43,7 @@ jobs:
           build-args: VERSION=${{ env.VERSION }}
           sbom: true
           provenance: mode=max
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.2
       - name: Sign multi-arch image by digest
         run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
       - name: Render pinned egg and checksums
