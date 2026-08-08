@@ -168,7 +168,7 @@ func (a *App) prepare(ctx context.Context, p Provider, req Request, resolved Res
 			return resolved, InstallContext{}, err
 		}
 	}
-	ic := InstallContext{Home: a.Config.Home, ControlDir: a.Config.Control, Artifact: artifactPath, Runtime: runtimePath, PreparedSource: preparedSource, Request: req, Log: a.Log, HTTP: a.HTTP, Out: a.Out, Err: a.Err}
+	ic := InstallContext{Home: a.Config.Home, ControlDir: a.Config.Control, AllocationPort: a.Config.AllocationPort, Artifact: artifactPath, Runtime: runtimePath, PreparedSource: preparedSource, Request: req, Log: a.Log, HTTP: a.HTTP, Out: a.Out, Err: a.Err}
 	return resolved, ic, nil
 }
 
@@ -290,6 +290,10 @@ func (a *App) runState(ctx context.Context, state State) error {
 		return fmt.Errorf("build process for %s: %w", state.Provider, err)
 	}
 	process.Environment = allocationEnvironment(state.Provider, process.Environment, a.Config.AllocationPort)
+	process.Environment, err = processUserEnvironment(state.Provider, a.Config.Home, process.Environment)
+	if err != nil {
+		return fmt.Errorf("prepare process environment for %s: %w", state.Provider, err)
+	}
 	if process.ReadyAfter == 0 {
 		process.ReadyAfter = 5 * time.Second
 	}

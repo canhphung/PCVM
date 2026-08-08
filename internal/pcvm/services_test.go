@@ -70,6 +70,29 @@ func TestWebRootRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestCaddyConfigIsHTTPHostAgnosticAndStateless(t *testing.T) {
+	config := caddyConfig("/home/container/.pcvm/web/caddy/conf.d", "/home/container/public", "6201", "static", "")
+	for _, want := range []string{
+		"\tpersist_config off\n",
+		"\t\tprotocols h1\n",
+		"\n:6201 {\n\tbind 0.0.0.0\n",
+		"\troot * /home/container/public\n",
+		"\tfile_server\n",
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("Caddy config missing %q:\n%s", want, config)
+		}
+	}
+	if strings.Contains(config, "http://0.0.0.0") {
+		t.Fatalf("Caddy config contains a Host-matching site address:\n%s", config)
+	}
+
+	proxy := caddyConfig("/extensions", "/public", "8080", "proxy", "http://upstream:3000")
+	if !strings.Contains(proxy, "\treverse_proxy http://upstream:3000\n") {
+		t.Fatalf("Caddy proxy config is invalid:\n%s", proxy)
+	}
+}
+
 func TestGameExtraArgsCannotOverrideManagedValues(t *testing.T) {
 	if args, err := safeGameExtraArgs(`-tickrate 128 +sv_cheats 0`); err != nil || len(args) != 4 {
 		t.Fatalf("safe args=%v err=%v", args, err)
@@ -194,7 +217,7 @@ func TestNewProviderCatalogContracts(t *testing.T) {
 		"rust-umod": "258550", "project-zomboid": "380870", "valheim": "896660", "valheim-bepinex": "896660",
 		"7dtd": "294420", "unturned": "1110390", "satisfactory": "1690800",
 	}
-	newProviders := []string{"nginx", "apache", "caddy", "cs2", "gmod", "l4d2", "palworld", "rust", "rust-umod", "project-zomboid", "valheim", "valheim-bepinex", "7dtd", "unturned", "terraria", "tmodloader", "satisfactory", "factorio"}
+	newProviders := []string{"nginx", "apache", "caddy", "cs2", "gmod", "l4d2", "palworld", "rust", "rust-umod", "project-zomboid", "valheim", "valheim-bepinex", "7dtd", "unturned", "terraria", "tmodloader", "satisfactory", "factorio", "powernukkitx", "cloudburst-nukkit", "endstone"}
 	for _, id := range newProviders {
 		spec := catalogSpec(t, id)
 		if len(spec.MenuPath) == 0 || len(spec.Architectures) == 0 || spec.Readiness.Mode == "" || spec.Control.Mode == "" {

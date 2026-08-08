@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -35,12 +36,25 @@ func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state St
 	if control.Mode == "" {
 		control = ControlSpec{Mode: "stdin", StopCommand: state.StopCommand}
 	}
-	return ProcessSpec{Command: append([]string(nil), state.Command...), Directory: state.WorkingDirectory,
+	command := append([]string(nil), state.Command...)
+	switch p.spec.ID {
+	case "powernukkitx":
+		command = append(command, "--skip-setup", "--accept-license", "--language", "eng", "--server-name", cfg.Request.ServerName, "--port", strconv.Itoa(cfg.AllocationPort))
+	case "cloudburst-nukkit":
+		command = append(command, "--language", "eng")
+	}
+	return ProcessSpec{Command: command, Directory: state.WorkingDirectory,
 		Environment: append([]string(nil), state.Environment...), ReadyPatterns: append([]string(nil), state.ReadyPatterns...),
 		StopCommand: state.StopCommand, Readiness: readiness, Control: control}, nil
 }
 
 func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPClient) (Resolved, error) {
+	if p.spec.ID == "powernukkitx" && req.RuntimeVersion != "" && req.RuntimeVersion != "auto" && req.RuntimeVersion != "21" {
+		return Resolved{}, fmt.Errorf("PowerNukkitX requires RUNTIME_VERSION=auto or 21")
+	}
+	if p.spec.ID == "cloudburst-nukkit" && req.RuntimeVersion != "" && req.RuntimeVersion != "auto" && req.RuntimeVersion != "8" {
+		return Resolved{}, fmt.Errorf("Cloudburst Nukkit requires RUNTIME_VERSION=auto or 8")
+	}
 	var artifact Artifact
 	var err error
 	switch p.spec.Resolver {
@@ -62,6 +76,10 @@ func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPC
 		artifact, err = resolveBungee(ctx, req, httpc)
 	case "bedrock":
 		artifact, err = resolveBedrock(ctx, httpc)
+	case "cloudburst-nukkit":
+		artifact, err = resolveCloudburstNukkit(ctx, req, httpc)
+	case "pypi-endstone":
+		artifact, err = resolveEndstone(ctx, req, httpc)
 	case "pocketmine":
 		artifact, err = resolveGitHub(ctx, req, httpc, "pmmp/PocketMine-MP", `(?i)\.phar$`)
 	case "github-release":
@@ -89,6 +107,10 @@ func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPC
 			switch p.spec.ID {
 			case "velocity":
 				runtimeVersion = "21"
+			case "powernukkitx":
+				runtimeVersion = "21"
+			case "cloudburst-nukkit":
+				runtimeVersion = "8"
 			case "lavalink":
 				runtimeVersion = "17"
 			default:
@@ -487,6 +509,101 @@ func resolveBedrock(ctx context.Context, h *HTTPClient) (Artifact, error) {
 	return Artifact{URL: m[0], FileName: "bedrock.zip", Kind: "zip", Version: m[1], Build: "release"}, nil
 }
 
+func resolveCloudburstNukkit(ctx context.Context, req Request, h *HTTPClient) (Artifact, error) {
+	version := req.Version
+	if version == "" || version == "latest" {
+		version = "1.0-SNAPSHOT"
+	}
+	if version != "1.0-SNAPSHOT" {
+		return Artifact{}, fmt.Errorf("Cloudburst Nukkit supports SOFTWARE_VERSION=latest or 1.0-SNAPSHOT")
+	}
+	const base = "https://repo.opencollab.dev/maven-snapshots/cn/nukkit/nukkit/1.0-SNAPSHOT/"
+	var metadata struct {
+		Versioning struct {
+			Snapshot struct {
+				BuildNumber string `xml:"buildNumber"`
+			} `xml:"snapshot"`
+			Versions []struct {
+				Classifier string `xml:"classifier"`
+				Extension  string `xml:"extension"`
+				Value      string `xml:"value"`
+			} `xml:"snapshotVersions>snapshotVersion"`
+		} `xml:"versioning"`
+	}
+	data, err := h.Text(ctx, base+"maven-metadata.xml", 1<<20)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if err := xml.Unmarshal(data, &metadata); err != nil {
+		return Artifact{}, fmt.Errorf("decode Cloudburst Nukkit metadata: %w", err)
+	}
+	value := ""
+	for _, candidate := range metadata.Versioning.Versions {
+		if candidate.Extension == "jar" && candidate.Classifier == "" {
+			value = candidate.Value
+			break
+		}
+	}
+	if value == "" || metadata.Versioning.Snapshot.BuildNumber == "" {
+		return Artifact{}, fmt.Errorf("Cloudburst Nukkit metadata contains no server JAR")
+	}
+	build := metadata.Versioning.Snapshot.BuildNumber
+	if req.Build != "" && req.Build != "latest" && req.Build != build {
+		return Artifact{}, fmt.Errorf("Cloudburst Nukkit build %s is unavailable; latest is %s", req.Build, build)
+	}
+	name := "nukkit-" + value + ".jar"
+	checksum, err := h.Text(ctx, base+name+".sha256", 1024)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("resolve Cloudburst Nukkit checksum: %w", err)
+	}
+	sha256 := strings.TrimSpace(string(checksum))
+	if !regexp.MustCompile(`^[a-fA-F0-9]{64}$`).MatchString(sha256) {
+		return Artifact{}, fmt.Errorf("Cloudburst Nukkit returned an invalid SHA-256")
+	}
+	return Artifact{URL: base + name, FileName: "nukkit.jar", Kind: "jar", SHA256: strings.ToLower(sha256), Version: version, Build: build}, nil
+}
+
+func resolveEndstone(ctx context.Context, req Request, h *HTTPClient) (Artifact, error) {
+	pythonVersion := req.RuntimeVersion
+	if pythonVersion == "" || pythonVersion == "auto" {
+		pythonVersion = "3.13"
+	}
+	if pythonVersion != "3.11" && pythonVersion != "3.12" && pythonVersion != "3.13" && pythonVersion != "3.14" {
+		return Artifact{}, fmt.Errorf("Endstone supports PCVM Python runtimes 3.11 through 3.14")
+	}
+	pythonTag := "cp" + strings.ReplaceAll(pythonVersion, ".", "")
+	version := strings.TrimPrefix(req.Version, "v")
+	endpoint := "https://pypi.org/pypi/endstone/json"
+	if version != "" && version != "latest" {
+		endpoint = "https://pypi.org/pypi/endstone/" + url.PathEscape(version) + "/json"
+	}
+	var release struct {
+		Info struct {
+			Version string `json:"version"`
+		} `json:"info"`
+		URLs []struct {
+			Filename    string `json:"filename"`
+			PackageType string `json:"packagetype"`
+			URL         string `json:"url"`
+			Digests     struct {
+				SHA256 string `json:"sha256"`
+			} `json:"digests"`
+		} `json:"urls"`
+	}
+	if err := h.JSON(ctx, endpoint, &release); err != nil {
+		return Artifact{}, err
+	}
+	for _, file := range release.URLs {
+		if file.PackageType == "bdist_wheel" && strings.Contains(file.Filename, "-"+pythonTag+"-"+pythonTag+"-manylinux_") && strings.HasSuffix(file.Filename, "_x86_64.whl") {
+			if !regexp.MustCompile(`^[a-fA-F0-9]{64}$`).MatchString(file.Digests.SHA256) {
+				return Artifact{}, fmt.Errorf("Endstone wheel lacks a valid SHA-256")
+			}
+			return Artifact{URL: file.URL, FileName: file.Filename, Kind: "wheel", SHA256: strings.ToLower(file.Digests.SHA256), Version: release.Info.Version, Build: "release"}, nil
+		}
+	}
+	return Artifact{}, fmt.Errorf("Endstone release %s has no CPython %s Linux x86_64 wheel", release.Info.Version, pythonVersion)
+}
+
 func resolveGitHub(ctx context.Context, req Request, h *HTTPClient, repo, assetPattern string) (Artifact, error) {
 	var release struct {
 		Tag    string `json:"tag_name"`
@@ -599,6 +716,8 @@ func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolv
 		return p.installFactorio(ctx, ic, resolved)
 	case "tmodloader":
 		return p.installTModLoader(ic, resolved)
+	case "endstone":
+		return p.installEndstone(ctx, ic, resolved)
 	default:
 		return resolved, fmt.Errorf("unsupported installer %q", p.spec.Installer)
 	}
@@ -608,6 +727,73 @@ func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolv
 		}
 	}
 	return resolved, nil
+}
+
+func (p *catalogProvider) installEndstone(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
+	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
+	venv := filepath.Join(managed, "venv-"+resolved.Artifact.Version+"-py"+resolved.RuntimeVersion)
+	venvPython := filepath.Join(venv, "bin", "python3")
+	if _, err := os.Stat(venvPython); err != nil && !os.IsNotExist(err) {
+		return resolved, fmt.Errorf("inspect Endstone virtualenv: %w", err)
+	} else if os.IsNotExist(err) {
+		staged, err := os.MkdirTemp(managed, ".venv-*")
+		if err != nil {
+			return resolved, err
+		}
+		stagedComplete := false
+		defer func() {
+			if !stagedComplete {
+				_ = os.RemoveAll(staged)
+			}
+		}()
+		environment, envErr := processUserEnvironment(p.spec.ID, ic.Home, os.Environ())
+		if envErr != nil {
+			return resolved, envErr
+		}
+		environment = upsertEnvironment(environment, "PATH", filepath.Dir(ic.Runtime)+string(os.PathListSeparator)+os.Getenv("PATH"))
+		cmd := exec.CommandContext(ctx, ic.Runtime, "-m", "venv", staged)
+		cmd.Env = environment
+		cmd.Stdout, cmd.Stderr = ic.Out, ic.Err
+		if err := cmd.Run(); err != nil {
+			return resolved, fmt.Errorf("create Endstone virtualenv: %w", err)
+		}
+		stagedPython := filepath.Join(staged, "bin", "python3")
+		cmd = exec.CommandContext(ctx, stagedPython, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--only-binary=:all:", "--index-url", "https://pypi.org/simple", "--upgrade", ic.Artifact)
+		cmd.Stdout, cmd.Stderr = ic.Out, ic.Err
+		cmd.Env = upsertEnvironment(environment, "PIP_CONFIG_FILE", os.DevNull)
+		cmd.Env = upsertEnvironment(cmd.Env, "PIP_EXTRA_INDEX_URL", "")
+		cmd.Env = upsertEnvironment(cmd.Env, "PIP_TRUSTED_HOST", "")
+		cmd.Env = upsertEnvironment(cmd.Env, "PIP_NO_INPUT", "1")
+		if err := cmd.Run(); err != nil {
+			return resolved, fmt.Errorf("install Endstone wheel: %w", err)
+		}
+		if err := os.Rename(staged, venv); err != nil {
+			return resolved, fmt.Errorf("activate Endstone virtualenv: %w", err)
+		}
+		stagedComplete = true
+	}
+	if err := ensureEndstoneProperties(ic); err != nil {
+		return resolved, err
+	}
+	resolved.WorkDir = ic.Home
+	resolved.Command = []string{venvPython, "-m", "endstone", "--server-folder", ic.Home, "--yes", "--remote", "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/v2"}
+	resolved.Environment = upsertEnvironment(resolved.Environment, "PYTHONUNBUFFERED", "1")
+	return resolved, nil
+}
+
+func ensureEndstoneProperties(ic InstallContext) error {
+	path := filepath.Join(ic.Home, "server.properties")
+	if info, err := os.Stat(path); err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("server.properties is a directory")
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	name := iniQuoted(ic.Request.ServerName)
+	data := fmt.Sprintf("server-name=%s\ngamemode=survival\nforce-gamemode=false\ndifficulty=easy\nallow-cheats=false\nmax-players=%d\nonline-mode=true\nallow-list=false\nserver-port=%d\nserver-portv6=%d\nenable-lan-visibility=true\nview-distance=32\ntick-distance=4\nplayer-idle-timeout=30\nlevel-name=Bedrock level\ndefault-player-permission-level=member\ntexturepack-required=false\n", name, ic.Request.MaxPlayers, ic.AllocationPort, ic.AllocationPort)
+	return writeAtomicFile(path, []byte(data), 0o640)
 }
 
 func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r Resolved) (Resolved, error) {
@@ -655,11 +841,26 @@ func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r R
 		}
 	}
 	entry = filepath.Clean(entry)
-	if filepath.IsAbs(entry) || strings.HasPrefix(entry, ".."+string(filepath.Separator)) {
+	if filepath.IsAbs(entry) || entry == ".." || strings.HasPrefix(entry, ".."+string(filepath.Separator)) {
 		return r, fmt.Errorf("ENTRY_FILE must stay inside source")
 	}
-	if _, err := os.Stat(filepath.Join(source, entry)); err != nil {
+	entryPath := filepath.Join(source, entry)
+	info, err := os.Stat(entryPath)
+	if os.IsNotExist(err) && ic.Request.SourceMode != "git" {
+		generated, generateErr := generateStarterEntry(p.spec.ID, entryPath)
+		if generateErr != nil {
+			return r, fmt.Errorf("generate starter entry: %w", generateErr)
+		}
+		if generated && ic.Log != nil {
+			ic.Log.Printf("generated Hello World starter %s for %s", entry, p.spec.Name)
+		}
+		info, err = os.Stat(entryPath)
+	}
+	if err != nil {
 		return r, fmt.Errorf("entry file: %w", err)
+	}
+	if info.IsDir() {
+		return r, fmt.Errorf("entry file is a directory")
 	}
 	args, err := SplitArgs(ic.Request.AppArgs)
 	if err != nil {
@@ -707,6 +908,58 @@ func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r R
 	r.WorkDir = source
 	r.Command = append([]string{runtimePath, entry}, args...)
 	return r, nil
+}
+
+func generateStarterEntry(providerID, path string) (bool, error) {
+	var content string
+	switch providerID {
+	case "node-bot":
+		content = `console.log("Hello World from PCVM!");
+
+// Keep the starter process alive until Pterodactyl stops the server.
+setInterval(() => {}, 60 * 60 * 1000);
+`
+	case "python-bot":
+		content = `import time
+
+print("Hello World from PCVM!", flush=True)
+
+# Keep the starter process alive until Pterodactyl stops the server.
+while True:
+    time.sleep(3600)
+`
+	default:
+		return false, fmt.Errorf("unsupported starter provider %q", providerID)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return false, err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if os.IsExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	created := true
+	defer func() {
+		if created {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := file.WriteString(content); err != nil {
+		_ = file.Close()
+		return false, err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return false, err
+	}
+	if err := file.Close(); err != nil {
+		return false, err
+	}
+	created = false
+	return true, nil
 }
 
 func SplitArgs(raw string) ([]string, error) {

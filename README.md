@@ -1,6 +1,6 @@
 # PCVM
 
-PCVM v1.2.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 32 providers without modifying Panel. Its Go launcher owns provider selection, checksum-verified runtimes, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
+PCVM v1.3.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 35 providers without modifying Panel. Its Go launcher owns provider selection, checksum-verified runtimes, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
 ## Provider catalog
 
@@ -8,20 +8,20 @@ PCVM v1.2.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 32 pr
 |---|---|
 | Minecraft Java | Vanilla, Paper, Purpur, Pufferfish, Fabric, Forge, NeoForge |
 | Minecraft Proxies | Velocity, BungeeCord |
-| Minecraft Bedrock | Bedrock Dedicated Server, PocketMine-MP |
+| Minecraft Bedrock | Bedrock Dedicated Server, PocketMine-MP, PowerNukkitX, Cloudburst Nukkit, Endstone |
 | Games — Source & FPS | Counter-Strike 2, Garry's Mod, Left 4 Dead 2 |
 | Games — Survival | Palworld, Rust, Rust + uMod, Project Zomboid, Valheim, Valheim + BepInEx, 7 Days to Die, Unturned |
 | Games — Sandbox & Automation | Terraria, tModLoader, Satisfactory, Factorio |
 | Web Servers | Nginx, Apache HTTP Server, Caddy |
 | Applications & Bots | Node.js bot, Python bot, Lavalink |
 
-All game providers are AMD64-only. Web, Minecraft and application providers remain available on ARM64 when the embedded runtime manifest has a compatible artifact. Waterfall is excluded because upstream ended maintenance. One server runs one provider at a time.
+All game providers are AMD64-only. Web, Minecraft and application providers remain available on ARM64 when the embedded runtime manifest has a compatible artifact. Endstone is AMD64-only because its official wheel is x86-64; PowerNukkitX and Cloudburst Nukkit support both PCVM architectures. LeviLamina is not listed because its upstream currently publishes Windows-only builds, while PCVM does not include Wine. Waterfall is excluded because upstream ended maintenance. One server runs one provider at a time.
 
 ## Install on Pterodactyl
 
-1. Download `egg-pcvm-1.2.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+1. Download `egg-pcvm-1.3.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
 2. Import it into a Nest on Pterodactyl 1.12.x.
-3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.2.0` image.
+3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.3.0` image.
 4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
 
 The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable startup command is:
