@@ -68,3 +68,32 @@ func TestPolicyBlocksProviderBeforeInstall(t *testing.T) {
 		t.Fatal("disabled provider was accepted")
 	}
 }
+
+func TestRunStateRepairsInvalidStoredReadyPattern(t *testing.T) {
+	home := t.TempDir()
+	control := home + "/.multiegg"
+	catalog, err := LoadCatalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := State{Provider: "vanilla", Family: "minecraft-java-vanilla", Command: []string{"server"}, WorkingDirectory: home, ReadyPatterns: []string{"Done ("}}
+	if err := SaveState(control, state); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp(Config{Home: home, Control: control}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
+	supervisor := &recordingSupervisor{}
+	app.Supervisor = supervisor
+	if err := app.runState(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if !supervisor.called || len(supervisor.spec.ReadyPatterns) == 0 || supervisor.spec.ReadyPatterns[0] != `Done \(` {
+		t.Fatalf("stored pattern was not repaired: %+v", supervisor.spec.ReadyPatterns)
+	}
+	repaired, err := LoadState(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired == nil || len(repaired.ReadyPatterns) == 0 || repaired.ReadyPatterns[0] != `Done \(` {
+		t.Fatalf("repaired state was not persisted: %+v", repaired)
+	}
+}

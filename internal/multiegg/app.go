@@ -253,6 +253,21 @@ func (a *App) runState(ctx context.Context, state State) error {
 	if len(state.Command) == 0 {
 		return fmt.Errorf("state contains no command")
 	}
+	if _, err := compileReadyPatterns(state.ReadyPatterns); err != nil {
+		spec, ok := a.Catalog.Provider(state.Provider)
+		if !ok {
+			return fmt.Errorf("repair stored readiness metadata for unknown provider %q: %w", state.Provider, err)
+		}
+		if _, catalogErr := compileReadyPatterns(spec.ReadyPatterns); catalogErr != nil {
+			return fmt.Errorf("repair stored readiness metadata for provider %q: %w", state.Provider, catalogErr)
+		}
+		a.Log.Printf("WARNING: repaired invalid stored readiness metadata for %s from the embedded catalog", state.Provider)
+		state.ReadyPatterns = append([]string(nil), spec.ReadyPatterns...)
+		state.StopCommand = spec.StopCommand
+		if err := SaveState(a.Config.Control, state); err != nil {
+			return fmt.Errorf("save repaired state: %w", err)
+		}
+	}
 	return a.Supervisor.Run(ctx, ProcessSpec{Command: state.Command, Directory: state.WorkingDirectory, Environment: state.Environment, ReadyPatterns: state.ReadyPatterns, StopCommand: state.StopCommand, ReadyAfter: 5 * time.Second, ReadyTimeout: 2 * time.Minute, StopTimeout: 30 * time.Second}, a.In, a.Out, a.Err)
 }
 
