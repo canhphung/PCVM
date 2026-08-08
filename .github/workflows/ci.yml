@@ -123,7 +123,7 @@ jobs:
                 sleep 1
               done
               test "$ready" = 1
-              host_port=$(docker port pcvm-under-test 8080/tcp | sed 's/.*://')
+              host_port=$(docker inspect -f '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' pcvm-under-test)
               curl --fail --retry 10 --retry-delay 1 "http://127.0.0.1:${host_port}/" >/dev/null
               docker stop --time 40 pcvm-under-test
             done
