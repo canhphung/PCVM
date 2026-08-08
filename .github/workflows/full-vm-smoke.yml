@@ -1,0 +1,70 @@
+name: Full VM smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: VM provider ID
+        required: true
+        type: choice
+        options: [vm-ubuntu, vm-debian, vm-almalinux, vm-rocky]
+      version:
+        description: Distro version from the embedded catalog
+        required: true
+        type: string
+      architecture:
+        description: Native runner architecture
+        required: true
+        type: choice
+        options: [amd64, arm64]
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate requested catalog combination
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          VERSION: ${{ inputs.version }}
+          ARCH: ${{ inputs.architecture }}
+        run: |
+          jq -e --arg p "$PROVIDER" --arg v "$VERSION" --arg a "$ARCH" \
+            '.providers[] | select(.id == $p) | .vm_images[] | select(.version == $v and .architecture == $a)' \
+            internal/pcvm/catalog.json >/dev/null
+      - name: Build native PCVM image
+        run: docker build --build-arg VERSION=1.4.0 -t pcvm:full-vm-smoke .
+      - name: Boot, use serial console, reboot and power down
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          docker volume create pcvm-vm-smoke >/dev/null
+          cleanup() { docker rm -f pcvm-vm >/dev/null 2>&1 || true; docker volume rm pcvm-vm-smoke >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run -d -i --name pcvm-vm --memory 3072m --cpus 2 --read-only \
+            --security-opt no-new-privileges --cap-drop ALL --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+            -v pcvm-vm-smoke:/home/container -e CLEAR_CONSOLE=0 -e SOFTWARE="$PROVIDER" \
+            -e SOFTWARE_VERSION="$VERSION" -e SOFTWARE_BUILD=latest -e VM_DISK_GB=8 \
+            pcvm:full-vm-smoke >/dev/null
+          for _ in $(seq 1 900); do
+            docker logs pcvm-vm 2>&1 | grep -Fq '[PCVM] READY' && break
+            test "$(docker inspect -f '{{.State.Running}}' pcvm-vm)" = true
+            sleep 1
+          done
+          test "$(docker logs pcvm-vm 2>&1 | grep -Fc '[PCVM] READY')" -ge 1
+          timeout 20 sh -c "printf 'uname -a\nsudo -n true\nsudo reboot\n' | docker attach --sig-proxy=false pcvm-vm" > /tmp/serial.log 2>&1 || true
+          grep -Eq 'Linux .* (x86_64|aarch64)' /tmp/serial.log
+          for _ in $(seq 1 900); do
+            test "$(docker logs pcvm-vm 2>&1 | grep -Fc '[PCVM] READY')" -ge 2 && break
+            test "$(docker inspect -f '{{.State.Running}}' pcvm-vm)" = true
+            sleep 1
+          done
+          test "$(docker logs pcvm-vm 2>&1 | grep -Fc '[PCVM] READY')" -ge 2
+          docker stop --time 110 pcvm-vm
+          test "$(docker inspect -f '{{.State.Running}}' pcvm-vm)" = false

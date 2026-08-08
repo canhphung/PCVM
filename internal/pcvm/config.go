@@ -37,7 +37,7 @@ func ConfigFromEnv() (Config, error) {
 		}
 		limit = parsed
 	}
-	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,fabric,forge,neoforge,velocity,bungeecord,bedrock,pocketmine,powernukkitx,cloudburst-nukkit,endstone,cs2,gmod,l4d2,palworld,rust,rust-umod,project-zomboid,valheim,valheim-bepinex,7dtd,unturned,terraria,tmodloader,satisfactory,factorio,nginx,apache,caddy,node-bot,python-bot,lavalink"))
+	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,fabric,forge,neoforge,velocity,bungeecord,bedrock,pocketmine,powernukkitx,cloudburst-nukkit,endstone,cs2,gmod,l4d2,palworld,rust,rust-umod,project-zomboid,valheim,valheim-bepinex,7dtd,unturned,terraria,tmodloader,satisfactory,factorio,nginx,apache,caddy,node-bot,python-bot,lavalink,vm-ubuntu,vm-debian,vm-almalinux,vm-rocky"))
 	gitHosts := csvSet(envDefault("GIT_ALLOWED_HOSTS", "github.com,gitlab.com,codeberg.org"))
 	request := Request{
 		Software: envDefault("SOFTWARE", "interactive"), Version: envDefault("SOFTWARE_VERSION", "latest"),
@@ -55,6 +55,8 @@ func ConfigFromEnv() (Config, error) {
 		GamePort2: envPort("GAME_PORT_2"), GamePort3: envPort("GAME_PORT_3"), RCONPort: envPortDefault("RCON_PORT", 25575),
 		TelnetPort: envPortDefault("TELNET_PORT", 8081), WebMode: envDefault("WEB_MODE", "static"),
 		WebRoot: envDefault("WEB_ROOT", "public"), UpstreamURL: os.Getenv("UPSTREAM_URL"),
+		VMMemoryMB: envDefault("VM_MEMORY_MB", "auto"), VMCPUs: envDefault("VM_CPUS", "auto"),
+		VMDiskGB: envInt("VM_DISK_GB", 10), VMHostname: envDefault("VM_HOSTNAME", "pcvm"),
 	}
 	brandName := envDefault("BRAND_NAME", "PCVM")
 	if strings.EqualFold(strings.ReplaceAll(brandName, " ", ""), "smartmultiegg") {
@@ -64,7 +66,8 @@ func ConfigFromEnv() (Config, error) {
 		BrandName: brandName, SupportURL: os.Getenv("SUPPORT_URL"),
 		RuntimeMirror: os.Getenv("RUNTIME_MIRROR_URL"), AllowedGitHosts: gitHosts,
 		CacheLimitBytes: limit * 1024 * 1024, AllowSystemPath: envBool("PCVM_ALLOW_SYSTEM_RUNTIME", false),
-		ClearConsole: envBool("CLEAR_CONSOLE", true)}
+		ClearConsole: envBool("CLEAR_CONSOLE", true), VMMaxMemoryMB: envInt("VM_MAX_MEMORY_MB", 16384),
+		VMMaxCPUs: envInt("VM_MAX_CPUS", 8), VMMaxDiskGB: envInt("VM_MAX_DISK_GB", 64)}
 	if policy.RuntimeMirror != "" {
 		u, err := url.Parse(policy.RuntimeMirror)
 		if err != nil || u.Scheme != "https" || u.Host == "" {
@@ -74,6 +77,10 @@ func ConfigFromEnv() (Config, error) {
 	arch := runtime.GOARCH
 	if arch != "amd64" && arch != "arm64" {
 		return Config{}, fmt.Errorf("unsupported architecture %q", arch)
+	}
+	request.Architecture = arch
+	if policy.VMMaxMemoryMB < 768 || policy.VMMaxCPUs < 1 || policy.VMMaxCPUs > 8 || policy.VMMaxDiskGB < 8 {
+		return Config{}, fmt.Errorf("VM admin caps are invalid")
 	}
 	allocationPort := 0
 	if raw := strings.TrimSpace(os.Getenv("SERVER_PORT")); raw != "" {

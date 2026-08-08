@@ -85,16 +85,22 @@ func (s ProcessSupervisor) Run(ctx context.Context, spec ProcessSpec, input io.R
 
 	ready := make(chan struct{}, 1)
 	var readyOnce sync.Once
-	markReady := func() { readyOnce.Do(func() { fmt.Fprintln(stdout, "[PCVM] READY"); ready <- struct{}{} }) }
+	markReady := func() {
+		first := false
+		readyOnce.Do(func() {
+			first = true
+			fmt.Fprintln(stdout, "[PCVM] READY")
+			ready <- struct{}{}
+		})
+		if !first && spec.RepeatReadiness {
+			fmt.Fprintln(stdout, "[PCVM] READY")
+		}
+	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	pump := func(src io.Reader, dst io.Writer) {
 		defer wg.Done()
-		scan := bufio.NewScanner(src)
-		scan.Buffer(make([]byte, 64*1024), 2<<20)
-		for scan.Scan() {
-			line := scan.Text()
-			fmt.Fprintln(dst, line)
+		matchReady := func(line string) {
 			if readiness.Mode == "regex" {
 				for _, re := range patterns {
 					if re.MatchString(line) {
@@ -103,6 +109,17 @@ func (s ProcessSupervisor) Run(ctx context.Context, spec ProcessSpec, input io.R
 					}
 				}
 			}
+		}
+		if spec.RawOutput {
+			pumpRawOutput(src, dst, matchReady)
+			return
+		}
+		scan := bufio.NewScanner(src)
+		scan.Buffer(make([]byte, 64*1024), 2<<20)
+		for scan.Scan() {
+			line := scan.Text()
+			fmt.Fprintln(dst, line)
+			matchReady(line)
 		}
 	}
 	go pump(outPipe, stdout)
@@ -133,23 +150,33 @@ func (s ProcessSupervisor) Run(ctx context.Context, spec ProcessSpec, input io.R
 	if control.Mode == "" {
 		control = ControlSpec{Mode: "stdin", StopCommand: spec.StopCommand}
 	}
-	sender := commandSender(func(command string) error {
+	consoleSender := commandSender(func(command string) error {
 		_, err := io.WriteString(stdin, strings.TrimSuffix(command, "\n")+"\n")
 		return err
 	})
+	stopSender := consoleSender
 	switch control.Mode {
 	case "stdin", "":
 	case "source-rcon":
-		sender = sourceRCONSender(control)
+		consoleSender = sourceRCONSender(control)
+		stopSender = consoleSender
 	case "telnet":
-		sender = telnetSender(control)
+		consoleSender = telnetSender(control)
+		stopSender = consoleSender
 	case "signal":
-		sender = func(string) error { return fmt.Errorf("console commands are not supported by this provider") }
+		consoleSender = func(string) error { return fmt.Errorf("console commands are not supported by this provider") }
+		stopSender = nil
+	case "qmp":
+		if control.SocketPath == "" {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("QMP control requires a socket path")
+		}
+		stopSender = func(string) error { return qmpPowerdown(control.SocketPath) }
 	default:
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("unsupported control mode %q", control.Mode)
 	}
-	go relayConsoleInput(input, sender, stderr)
+	go relayConsoleInput(input, consoleSender, stderr)
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -185,8 +212,14 @@ func (s ProcessSupervisor) Run(ctx context.Context, spec ProcessSpec, input io.R
 	if stopCommand == "" {
 		stopCommand = spec.StopCommand
 	}
-	if stopCommand != "" {
-		if err := sendWithRetry(sender, stopCommand); err != nil && s.Log != nil {
+	if control.Mode == "qmp" {
+		if err := sendWithRetry(stopSender, "system_powerdown"); err != nil && s.Log != nil {
+			s.Log.Printf("WARNING: graceful VM powerdown failed: %v", err)
+		}
+	} else if control.Mode == "signal" {
+		_ = cmd.Process.Signal(os.Interrupt)
+	} else if stopCommand != "" {
+		if err := sendWithRetry(stopSender, stopCommand); err != nil && s.Log != nil {
 			s.Log.Printf("WARNING: graceful stop command failed: %v", err)
 		}
 	} else {
@@ -223,6 +256,36 @@ func (s ProcessSupervisor) Run(ctx context.Context, spec ProcessSpec, input io.R
 			return shutdownErr
 		}
 		return err
+	}
+}
+
+func pumpRawOutput(src io.Reader, dst io.Writer, inspect func(string)) {
+	buffer := make([]byte, 32*1024)
+	pending := ""
+	for {
+		count, err := src.Read(buffer)
+		if count > 0 {
+			chunk := buffer[:count]
+			_, _ = dst.Write(chunk)
+			pending += string(chunk)
+			for {
+				index := strings.IndexByte(pending, '\n')
+				if index < 0 {
+					if len(pending) > 2<<20 {
+						pending = pending[len(pending)-(1<<20):]
+					}
+					break
+				}
+				inspect(strings.TrimSuffix(pending[:index], "\r"))
+				pending = pending[index+1:]
+			}
+		}
+		if err != nil {
+			if pending != "" {
+				inspect(pending)
+			}
+			return
+		}
 	}
 }
 

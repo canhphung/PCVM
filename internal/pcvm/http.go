@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -24,7 +25,7 @@ type HTTPClient struct {
 }
 
 func NewHTTPClient() *HTTPClient {
-	hosts := csvSet("launchermeta.mojang.com,piston-meta.mojang.com,piston-data.mojang.com,fill.papermc.io,fill-data.papermc.io,api.purpurmc.org,ci.pufferfish.host,meta.fabricmc.net,maven.minecraftforge.net,maven.neoforged.net,ci.md-5.net,hub.spigotmc.org,repo.opencollab.dev,net-secondary.web.minecraft-services.net,www.minecraft.net,minecraft.net,minecraft.azureedge.net,api.github.com,github.com,raw.githubusercontent.com,objects.githubusercontent.com,release-assets.githubusercontent.com,pypi.org,files.pythonhosted.org,nodejs.org,python.org,www.python.org,download.oracle.com,api.adoptium.net,terraria.org,www.terraria.org,factorio.com,www.factorio.com,dl.factorio.com,steamcdn-a.akamaihd.net,github-releases.githubusercontent.com,builds.dotnet.microsoft.com")
+	hosts := csvSet("launchermeta.mojang.com,piston-meta.mojang.com,piston-data.mojang.com,fill.papermc.io,fill-data.papermc.io,api.purpurmc.org,ci.pufferfish.host,meta.fabricmc.net,maven.minecraftforge.net,maven.neoforged.net,ci.md-5.net,hub.spigotmc.org,repo.opencollab.dev,net-secondary.web.minecraft-services.net,www.minecraft.net,minecraft.net,minecraft.azureedge.net,api.github.com,github.com,raw.githubusercontent.com,objects.githubusercontent.com,release-assets.githubusercontent.com,pypi.org,files.pythonhosted.org,nodejs.org,python.org,www.python.org,download.oracle.com,api.adoptium.net,terraria.org,www.terraria.org,factorio.com,www.factorio.com,dl.factorio.com,steamcdn-a.akamaihd.net,github-releases.githubusercontent.com,builds.dotnet.microsoft.com,cloud-images.ubuntu.com,cloud.debian.org,repo.almalinux.org,download.rockylinux.org")
 	h := &HTTPClient{AllowedHosts: hosts, Retries: 3}
 	h.Client = &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(req *http.Request, _ []*http.Request) error { return h.validate(req.URL.String()) }}
 	return h
@@ -45,6 +46,10 @@ func (h *HTTPClient) validate(raw string) error {
 }
 
 func (h *HTTPClient) request(ctx context.Context, raw string) (*http.Response, error) {
+	return h.requestWithClient(ctx, raw, h.Client)
+}
+
+func (h *HTTPClient) requestWithClient(ctx context.Context, raw string, client *http.Client) (*http.Response, error) {
 	if err := h.validate(raw); err != nil {
 		return nil, err
 	}
@@ -55,7 +60,7 @@ func (h *HTTPClient) request(ctx context.Context, raw string) (*http.Response, e
 			return nil, err
 		}
 		req.Header.Set("User-Agent", "PCVM/1")
-		resp, err := h.Client.Do(req)
+		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return resp, nil
 		}
@@ -127,7 +132,9 @@ func (h *HTTPClient) Probe(ctx context.Context, raw string) error {
 }
 
 func (h *HTTPClient) Download(ctx context.Context, artifact Artifact, dest string) (Artifact, error) {
-	resp, err := h.request(ctx, artifact.URL)
+	downloadClient := *h.Client
+	downloadClient.Timeout = 30 * time.Minute
+	resp, err := h.requestWithClient(ctx, artifact.URL, &downloadClient)
 	if err != nil {
 		return artifact, err
 	}
@@ -141,9 +148,9 @@ func (h *HTTPClient) Download(ctx context.Context, artifact Artifact, dest strin
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	h256, h1 := sha256.New(), sha1.New()
+	h256, h512, h1 := sha256.New(), sha512.New(), sha1.New()
 	const maxDownload = int64(4 << 30)
-	written, err := io.Copy(io.MultiWriter(tmp, h256, h1), io.LimitReader(resp.Body, maxDownload+1))
+	written, err := io.Copy(io.MultiWriter(tmp, h256, h512, h1), io.LimitReader(resp.Body, maxDownload+1))
 	if err != nil {
 		tmp.Close()
 		return artifact, err
@@ -159,12 +166,15 @@ func (h *HTTPClient) Download(ctx context.Context, artifact Artifact, dest strin
 	if err := tmp.Close(); err != nil {
 		return artifact, err
 	}
-	got256, got1 := hex.EncodeToString(h256.Sum(nil)), hex.EncodeToString(h1.Sum(nil))
+	got256, got512, got1 := hex.EncodeToString(h256.Sum(nil)), hex.EncodeToString(h512.Sum(nil)), hex.EncodeToString(h1.Sum(nil))
 	if artifact.SHA256 != "" && !strings.EqualFold(artifact.SHA256, got256) {
 		return artifact, fmt.Errorf("SHA-256 mismatch for %s", artifact.FileName)
 	}
 	if artifact.SHA1 != "" && !strings.EqualFold(artifact.SHA1, got1) {
 		return artifact, fmt.Errorf("SHA-1 mismatch for %s", artifact.FileName)
+	}
+	if artifact.SHA512 != "" && !strings.EqualFold(artifact.SHA512, got512) {
+		return artifact, fmt.Errorf("SHA-512 mismatch for %s", artifact.FileName)
 	}
 	artifact.SHA256 = got256
 	if err := os.Rename(name, dest); err != nil {

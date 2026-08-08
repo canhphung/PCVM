@@ -83,3 +83,20 @@ func TestGameMenuUsesThreeLevels(t *testing.T) {
 		}
 	}
 }
+
+func TestVMMenuUsesThreeLevels(t *testing.T) {
+	app, output := menuTestApp(t, "1\n2\n1\n", map[string]bool{"vm-ubuntu": true, "vm-debian": true, "vm-rocky": true})
+	selected, err := app.menu()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "vm-rocky" {
+		t.Fatalf("selected=%q, want vm-rocky", selected)
+	}
+	text := output.String()
+	for _, want := range []string{"Virtual Machines", "Debian Family", "Enterprise Linux", "Selected: Rocky Linux [vm-rocky]"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("VM menu missing %q:\n%s", want, text)
+		}
+	}
+}

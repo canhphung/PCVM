@@ -18,9 +18,11 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then dpkg --add-architecture i386; fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
        apache2 build-essential ca-certificates git libatomic1 libcurl4 libicu72 libpulse0 libsqlite3-0 libssl3 libunwind8 \
-       nginx-light tini unzip xz-utils zstd \
+       genisoimage nginx-light openssl qemu-utils tini unzip xz-utils zstd \
     && if [ "$TARGETARCH" = "amd64" ]; then \
-         apt-get install -y --no-install-recommends libc6:i386 lib32gcc-s1 lib32stdc++6; \
+         apt-get install -y --no-install-recommends libc6:i386 lib32gcc-s1 lib32stdc++6 ovmf qemu-system-x86; \
+       else \
+         apt-get install -y --no-install-recommends qemu-efi-aarch64 qemu-system-arm; \
        fi \
     && a2enmod proxy proxy_http headers \
     && rm -rf /var/lib/apt/lists/* \

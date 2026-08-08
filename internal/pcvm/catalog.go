@@ -2,8 +2,10 @@ package pcvm
 
 import (
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -86,7 +88,7 @@ func (c Catalog) Validate() error {
 			return fmt.Errorf("provider %q has invalid TCP readiness port %q", p.ID, p.Readiness.PortVariable)
 		}
 		switch p.Control.Mode {
-		case "", "stdin", "source-rcon", "telnet", "signal":
+		case "", "stdin", "source-rcon", "telnet", "signal", "qmp":
 		default:
 			return fmt.Errorf("provider %q has unsupported control mode %q", p.ID, p.Control.Mode)
 		}
@@ -105,6 +107,45 @@ func (c Catalog) Validate() error {
 				return fmt.Errorf("provider %q has invalid Steam metadata", p.ID)
 			}
 		}
+		if p.Installer == "qemu-vm" {
+			if p.Resolver != "vm-image" || p.Runtime != "native" || len(p.VMImages) != 4 {
+				return fmt.Errorf("provider %q has incomplete VM metadata", p.ID)
+			}
+			images := map[string]bool{}
+			versions := map[string]map[string]bool{}
+			for _, image := range p.VMImages {
+				key := image.Version + "/" + image.Architecture
+				u, err := url.Parse(image.URL)
+				if image.Version == "" || image.Build == "" || image.Format != "qcow2" || images[key] ||
+					(image.Architecture != "amd64" && image.Architecture != "arm64") || !contains(p.Architectures, image.Architecture) || err != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !validVMImageHost(u.Hostname()) ||
+					strings.Contains(strings.ToLower(image.URL), "/latest/") || !strings.Contains(image.URL, image.Build) {
+					return fmt.Errorf("provider %q has invalid immutable VM image %q", p.ID, key)
+				}
+				if (!validHexDigest(image.SHA256, 64) || image.SHA512 != "") && (!validHexDigest(image.SHA512, 128) || image.SHA256 != "") {
+					return fmt.Errorf("provider %q VM image %q must have exactly one valid checksum", p.ID, key)
+				}
+				images[key] = true
+				if versions[image.Version] == nil {
+					versions[image.Version] = map[string]bool{}
+				}
+				versions[image.Version][image.Architecture] = true
+			}
+			if len(versions) != 2 {
+				return fmt.Errorf("provider %q must pin exactly two VM versions", p.ID)
+			}
+			for version, architectures := range versions {
+				for _, architecture := range p.Architectures {
+					if !architectures[architecture] {
+						return fmt.Errorf("provider %q VM version %q lacks %s", p.ID, version, architecture)
+					}
+				}
+			}
+			if p.Control.Mode != "qmp" {
+				return fmt.Errorf("provider %q VM must use QMP control", p.ID)
+			}
+		} else if len(p.VMImages) != 0 {
+			return fmt.Errorf("provider %q has VM images but is not a VM", p.ID)
+		}
 	}
 	for _, pack := range c.RuntimePacks {
 		if pack.Kind == "" || pack.Version == "" || pack.Architecture == "" {
@@ -117,6 +158,23 @@ func (c Catalog) Validate() error {
 	return nil
 }
 
+func validHexDigest(value string, length int) bool {
+	if len(value) != length {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validVMImageHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "cloud-images.ubuntu.com", "cloud.debian.org", "repo.almalinux.org", "download.rockylinux.org":
+		return true
+	default:
+		return false
+	}
+}
+
 func validMenuPath(path []string) bool {
 	if len(path) == 1 {
 		switch path[0] {
@@ -127,6 +185,12 @@ func validMenuPath(path []string) bool {
 	if len(path) == 2 && path[0] == "games" {
 		switch path[1] {
 		case "source", "survival", "sandbox":
+			return true
+		}
+	}
+	if len(path) == 2 && path[0] == "vms" {
+		switch path[1] {
+		case "debian-family", "enterprise-linux":
 			return true
 		}
 	}

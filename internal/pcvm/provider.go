@@ -25,6 +25,9 @@ func (p *catalogProvider) Spec() ProviderSpec              { return p.spec }
 func (p *catalogProvider) CompareVersions(a, b string) int { return CompareVersions(a, b) }
 
 func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state State) (ProcessSpec, error) {
+	if p.spec.Installer == "qemu-vm" {
+		return p.buildVMProcess(cfg, state)
+	}
 	if p.spec.Installer == "web" || len(p.spec.MenuPath) > 0 && p.spec.MenuPath[0] == "games" {
 		return p.buildServiceProcess(ctx, cfg, state)
 	}
@@ -94,6 +97,8 @@ func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPC
 		artifact, err = resolveTerraria(ctx, req, httpc)
 	case "factorio":
 		artifact, err = resolveFactorio(ctx, req, httpc)
+	case "vm-image":
+		artifact, err = resolveVMImage(p.spec, req)
 	default:
 		err = fmt.Errorf("unsupported resolver %q", p.spec.Resolver)
 	}
@@ -718,6 +723,8 @@ func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolv
 		return p.installTModLoader(ic, resolved)
 	case "endstone":
 		return p.installEndstone(ctx, ic, resolved)
+	case "qemu-vm":
+		return p.installVM(ctx, ic, resolved)
 	default:
 		return resolved, fmt.Errorf("unsupported installer %q", p.spec.Installer)
 	}

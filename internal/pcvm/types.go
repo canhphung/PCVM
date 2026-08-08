@@ -8,7 +8,7 @@ import (
 
 const (
 	StateSchema   = 2
-	CatalogSchema = 2
+	CatalogSchema = 3
 )
 
 type Catalog struct {
@@ -36,6 +36,17 @@ type ProviderSpec struct {
 	Control       ControlSpec       `json:"control,omitempty"`
 	MinimumMemory int               `json:"minimum_memory_mb,omitempty"`
 	MinimumDisk   int               `json:"minimum_disk_mb,omitempty"`
+	VMImages      []VMImageSpec     `json:"vm_images,omitempty"`
+}
+
+type VMImageSpec struct {
+	Version      string `json:"version"`
+	Build        string `json:"build"`
+	Architecture string `json:"architecture"`
+	URL          string `json:"url"`
+	Format       string `json:"format"`
+	SHA256       string `json:"sha256,omitempty"`
+	SHA512       string `json:"sha512,omitempty"`
 }
 
 type PortRequirement struct {
@@ -56,6 +67,7 @@ type ControlSpec struct {
 	StopCommand  string `json:"stop_command,omitempty"`
 	PortVariable string `json:"port_variable,omitempty"`
 	Password     string `json:"password,omitempty"`
+	SocketPath   string `json:"socket_path,omitempty"`
 }
 
 type RuntimePackSpec struct {
@@ -102,6 +114,11 @@ type Request struct {
 	WebMode        string
 	WebRoot        string
 	UpstreamURL    string
+	Architecture   string
+	VMMemoryMB     string
+	VMCPUs         string
+	VMDiskGB       int
+	VMHostname     string
 }
 
 type Policy struct {
@@ -114,6 +131,9 @@ type Policy struct {
 	CacheLimitBytes int64
 	AllowSystemPath bool
 	ClearConsole    bool
+	VMMaxMemoryMB   int
+	VMMaxCPUs       int
+	VMMaxDiskGB     int
 }
 
 type State struct {
@@ -156,6 +176,7 @@ type Artifact struct {
 	Kind     string            `json:"kind"`
 	SHA256   string            `json:"sha256,omitempty"`
 	SHA1     string            `json:"sha1,omitempty"`
+	SHA512   string            `json:"sha512,omitempty"`
 	Version  string            `json:"version"`
 	Build    string            `json:"build"`
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -195,16 +216,18 @@ type Provider interface {
 }
 
 type ProcessSpec struct {
-	Command       []string
-	Directory     string
-	Environment   []string
-	ReadyPatterns []string
-	StopCommand   string
-	ReadyAfter    time.Duration
-	ReadyTimeout  time.Duration
-	StopTimeout   time.Duration
-	Readiness     ReadinessSpec
-	Control       ControlSpec
+	Command         []string
+	Directory       string
+	Environment     []string
+	ReadyPatterns   []string
+	StopCommand     string
+	ReadyAfter      time.Duration
+	ReadyTimeout    time.Duration
+	StopTimeout     time.Duration
+	Readiness       ReadinessSpec
+	Control         ControlSpec
+	RawOutput       bool
+	RepeatReadiness bool
 }
 
 type Supervisor interface {

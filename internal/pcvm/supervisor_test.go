@@ -118,3 +118,17 @@ func TestSupervisorReadinessAndGracefulStop(t *testing.T) {
 		t.Fatalf("stop command not forwarded: %s", output.String())
 	}
 }
+
+func TestPumpRawOutputForwardsPromptWithoutNewline(t *testing.T) {
+	var output bytes.Buffer
+	var inspected []string
+	pumpRawOutput(strings.NewReader("pcvm@guest:~$ echo ok\r\n[PCVM-GUEST] READY\nnext> "), &output, func(line string) {
+		inspected = append(inspected, line)
+	})
+	if output.String() != "pcvm@guest:~$ echo ok\r\n[PCVM-GUEST] READY\nnext> " {
+		t.Fatalf("raw console output changed: %q", output.String())
+	}
+	if len(inspected) != 3 || inspected[0] != "pcvm@guest:~$ echo ok" || inspected[1] != "[PCVM-GUEST] READY" || inspected[2] != "next> " {
+		t.Fatalf("inspected lines=%q", inspected)
+	}
+}

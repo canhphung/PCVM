@@ -41,3 +41,40 @@ jobs:
           for appid in 730 4020 222860 2394010 258550 380870 896660 294420 1110390 1690800; do
             grep -Fq "\"${appid}\"" /tmp/steam-apps.log
           done
+      - name: Verify immutable VM URLs and official checksum manifests
+        run: |
+          set -euo pipefail
+          jq -r '.providers[].vm_images[]?.url' internal/pcvm/catalog.json | while IFS= read -r url; do
+            curl --fail --silent --show-error --location --retry 3 --max-time 90 \
+              --range 0-0 --max-filesize 1 --output /dev/null "$url"
+          done
+          python3 - <<'PY'
+          import json, pathlib, re, urllib.parse, urllib.request
+
+          catalog = json.loads(pathlib.Path("internal/pcvm/catalog.json").read_text())
+          cache = {}
+          for provider in catalog["providers"]:
+              for image in provider.get("vm_images", []):
+                  url = image["url"]
+                  directory, filename = url.rsplit("/", 1)
+                  algorithm = "sha512" if image.get("sha512") else "sha256"
+                  manifest_name = "SHA512SUMS" if algorithm == "sha512" else "SHA256SUMS"
+                  if "repo.almalinux.org" in url or "download.rockylinux.org" in url:
+                      manifest_name = "CHECKSUM"
+                  manifest_url = directory + "/" + manifest_name
+                  if manifest_url not in cache:
+                      request = urllib.request.Request(manifest_url, headers={"User-Agent": "PCVM nightly"})
+                      with urllib.request.urlopen(request, timeout=90) as response:
+                          cache[manifest_url] = response.read().decode("utf-8", "replace")
+                  expected = image[algorithm].lower()
+                  escaped = re.escape(urllib.parse.unquote(filename))
+                  length = 128 if algorithm == "sha512" else 64
+                  patterns = [
+                      rf"(?mi)^([0-9a-f]{{{length}}})\s+[* ]?{escaped}\s*$",
+                      rf"(?mi)^{algorithm.upper()}\s*\({escaped}\)\s*=\s*([0-9a-f]{{{length}}})\s*$",
+                  ]
+                  found = next((match.group(1).lower() for pattern in patterns if (match := re.search(pattern, cache[manifest_url]))), None)
+                  if found != expected:
+                      raise SystemExit(f"checksum manifest mismatch for {provider['id']} {image['version']} {image['architecture']}")
+          print("verified 16 immutable VM image checksums")
+          PY

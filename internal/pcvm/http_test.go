@@ -3,6 +3,7 @@ package pcvm
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,23 @@ func TestDownloadChecksumAndAtomicFile(t *testing.T) {
 	}
 	if _, err = h.Download(context.Background(), Artifact{URL: server.URL, FileName: "bad", SHA256: strings.Repeat("0", 64)}, dest+".bad"); err == nil {
 		t.Fatal("accepted bad checksum")
+	}
+}
+
+func TestDownloadSHA512(t *testing.T) {
+	body := "debian cloud image fixture"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, body) }))
+	defer server.Close()
+	h := NewHTTPClient()
+	h.AllowHTTP = true
+	h.AllowedHosts = map[string]bool{"127.0.0.1": true}
+	sum := fmt.Sprintf("%x", sha512.Sum512([]byte(body)))
+	dest := filepath.Join(t.TempDir(), "image.qcow2")
+	if _, err := h.Download(context.Background(), Artifact{URL: server.URL, FileName: "image.qcow2", SHA512: sum}, dest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Download(context.Background(), Artifact{URL: server.URL, FileName: "bad", SHA512: strings.Repeat("0", 128)}, dest+".bad"); err == nil {
+		t.Fatal("accepted bad SHA-512")
 	}
 }
 
