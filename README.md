@@ -1,6 +1,6 @@
 # PCVM
 
-PCVM v1.3.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 35 providers without modifying Panel. Its Go launcher owns provider selection, checksum-verified runtimes, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
+PCVM v1.4.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 39 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
 ## Provider catalog
 
@@ -14,14 +14,16 @@ PCVM v1.3.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 35 pr
 | Games — Sandbox & Automation | Terraria, tModLoader, Satisfactory, Factorio |
 | Web Servers | Nginx, Apache HTTP Server, Caddy |
 | Applications & Bots | Node.js bot, Python bot, Lavalink |
+| Virtual Machines â€” Debian Family | Ubuntu Server 24.04/26.04 LTS, Debian 12/13 |
+| Virtual Machines â€” Enterprise Linux | AlmaLinux 9/10, Rocky Linux 9/10 |
 
-All game providers are AMD64-only. Web, Minecraft and application providers remain available on ARM64 when the embedded runtime manifest has a compatible artifact. Endstone is AMD64-only because its official wheel is x86-64; PowerNukkitX and Cloudburst Nukkit support both PCVM architectures. LeviLamina is not listed because its upstream currently publishes Windows-only builds, while PCVM does not include Wine. Waterfall is excluded because upstream ended maintenance. One server runs one provider at a time.
+All game providers are AMD64-only. Web, Minecraft, application and VM providers remain available on ARM64 when their embedded artifact metadata supports it. VM guests always match the host architecture. Endstone is AMD64-only because its official wheel is x86-64; PowerNukkitX and Cloudburst Nukkit support both PCVM architectures. LeviLamina is not listed because its upstream currently publishes Windows-only builds, while PCVM does not include Wine. Waterfall is excluded because upstream ended maintenance. One server runs one provider at a time.
 
 ## Install on Pterodactyl
 
-1. Download `egg-pcvm-1.3.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+1. Download `egg-pcvm-1.4.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
 2. Import it into a Nest on Pterodactyl 1.12.x.
-3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.3.0` image.
+3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.4.0` image.
 4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
 
 The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable startup command is:
@@ -76,9 +78,17 @@ RESET_CONFIRM=DELETE:0123456789abcdef...
 
 After the exact confirmation, the launcher resets only canonical `/home/container`, does not follow symlinks and preserves the runtime cache. Back up data first. Hosts can disable user resets with `ALLOW_USER_RESET=0`.
 
+## Linux virtual machines
+
+Ubuntu, Debian, AlmaLinux and Rocky Linux run as real same-architecture QEMU system VMs using unprivileged multi-threaded TCG. No KVM, TAP, bridge, device passthrough or Wings changes are required. QEMU user-mode NAT provides outbound DHCP, DNS and HTTP, but v1.4 intentionally exposes no inbound guest port. The Pterodactyl console is the guest serial console; cloud-init creates the auto-login `pcvm` user with passwordless `sudo`.
+
+The first boot downloads an immutable official cloud image, verifies SHA-256 or SHA-512, converts it to an independent sparse `vm/disk.qcow2`, resizes and checks it, and creates a NoCloud seed plus writable UEFI variables through a staged atomic install. The base image cache is then removed. `VM_MEMORY_MB`, `VM_CPUS`, `VM_DISK_GB` and `VM_HOSTNAME` control initial resources; admin caps are `VM_MAX_MEMORY_MB`, `VM_MAX_CPUS` and `VM_MAX_DISK_GB`.
+
+VM image updates never modify an existing disk. Changing distro, version or pinned build requires the reset nonce flow. `AUTO_UPDATE` and `UPDATE_REQUEST` are rejected for VM providers; update packages from inside the guest. Panel stop uses QMP ACPI powerdown and waits up to 90 seconds. Back up `vm/disk.qcow2` only while the VM is stopped; snapshots are not supported in v1.4.
+
 ## Runtimes and downloads
 
-The Debian slim image contains Nginx, Apache, Git, CA certificates, archive/native build tools and common native game libraries. AMD64 additionally contains the i386 libraries required by SteamCMD and Source-family servers. Game binaries, Wine and Proton are not built into the image.
+The Debian slim image contains Nginx, Apache, Git, CA certificates, archive/native build tools, QEMU system emulation, `qemu-img`, ISO tooling, OpenSSL, UEFI firmware and common native game libraries. AMD64 additionally contains the i386 libraries required by SteamCMD and Source-family servers. Game binaries, Wine and Proton are not built into the image.
 
 `runtime-manifest.json` contains 27 architecture-specific, SHA-256-pinned packs:
 
@@ -99,7 +109,8 @@ The release Egg defines the full public interface. Main groups are:
 - Games: `SERVER_NAME`, `SERVER_PASSWORD`, `ADMIN_PASSWORD`, `MAX_PLAYERS`, `GAME_MAP`, `GAME_WORLD`, `GAME_SEED`, `GAME_EXTRA_ARGS`, `STEAM_GSLT` and the port variables above.
 - Web: `WEB_MODE`, `WEB_ROOT`, `UPSTREAM_URL`.
 - Bots: `SOURCE_MODE`, `GIT_URL`, `GIT_BRANCH`, `ENTRY_FILE`, `APP_ARGS`, `APP_READY_PATTERN`.
-- Admin policy: `ALLOWED_SOFTWARE`, `ALLOW_USER_RESET`, `BRAND_NAME`, `SUPPORT_URL`, `RUNTIME_MIRROR_URL`, `GIT_ALLOWED_HOSTS`, `CACHE_LIMIT_MB`, `CLEAR_CONSOLE`.
+- VMs: `VM_MEMORY_MB`, `VM_CPUS`, `VM_DISK_GB`, `VM_HOSTNAME`.
+- Admin policy: `ALLOWED_SOFTWARE`, `ALLOW_USER_RESET`, `BRAND_NAME`, `SUPPORT_URL`, `RUNTIME_MIRROR_URL`, `GIT_ALLOWED_HOSTS`, `CACHE_LIMIT_MB`, `CLEAR_CONSOLE`, `VM_MAX_MEMORY_MB`, `VM_MAX_CPUS`, `VM_MAX_DISK_GB`.
 
 Pterodactyl view/edit flags are UI policy, not a secret store. Bot Git mode permits public credential-free HTTPS repositories only; upload mode runs files already present in the server directory.
 
@@ -112,6 +123,6 @@ go run ./cmd/runtime-manifest -out runtime-manifest.json
 docker build -t pcvm:dev .
 ```
 
-Pull requests use local HTTP fixtures, a SteamCMD shim and fake control servers. CI cross-compiles AMD64/ARM64, tests web static/proxy modes on both architectures and builds the multi-architecture image with SBOM and provenance. Nightly checks live resolvers, runtime metadata and Steam App IDs without downloading full games. The manual `full-game-smoke` workflow installs one selected real game per run.
+Pull requests use local HTTP fixtures, a SteamCMD shim, fake QEMU/QMP and fake control servers. CI cross-compiles AMD64/ARM64, checks QEMU/firmware as non-root with a read-only container root, tests web static/proxy modes and builds the multi-architecture image with SBOM and provenance. Nightly checks live resolvers, runtime metadata, Steam App IDs and pinned cloud-image URLs without downloading full games. Manual `full-game-smoke` and `full-vm-smoke` workflows run one selected real provider per invocation.
 
 Tags matching `v*.*.*` publish a version-pinned Egg and image, checksums, provenance and a keyless Cosign signature.

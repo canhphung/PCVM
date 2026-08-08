@@ -10,8 +10,8 @@ func TestEmbeddedCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Providers) != 35 {
-		t.Fatalf("providers=%d, want 35", len(c.Providers))
+	if len(c.Providers) != 39 {
+		t.Fatalf("providers=%d, want 39", len(c.Providers))
 	}
 	if _, ok := c.Provider("waterfall"); ok {
 		t.Fatal("Waterfall must not be shipped")
@@ -40,6 +40,32 @@ func TestEmbeddedCatalog(t *testing.T) {
 	}
 }
 
+func TestEmbeddedVMCatalogHasSixteenPinnedImages(t *testing.T) {
+	c, err := LoadCatalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, id := range []string{"vm-ubuntu", "vm-debian", "vm-almalinux", "vm-rocky"} {
+		provider, ok := c.Provider(id)
+		if !ok || provider.Installer != "qemu-vm" || len(provider.VMImages) != 4 {
+			t.Fatalf("invalid VM provider %s: %#v", id, provider)
+		}
+		seen := map[string]bool{}
+		for _, image := range provider.VMImages {
+			key := image.Version + "/" + image.Architecture
+			if seen[key] || image.URL == "" || image.Build == "" || (image.SHA256 == "" && image.SHA512 == "") {
+				t.Fatalf("invalid VM image %s/%s: %#v", id, key, image)
+			}
+			seen[key] = true
+			total++
+		}
+	}
+	if total != 16 {
+		t.Fatalf("VM images=%d, want 16", total)
+	}
+}
+
 func TestCatalogRejectsDuplicateAndUnpinnedRuntime(t *testing.T) {
 	c := Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{{ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "x", Installer: "x", MenuPath: []string{"apps"}}, {ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "x", Installer: "x", MenuPath: []string{"apps"}}}}
 	if err := c.Validate(); err == nil {
@@ -62,7 +88,7 @@ func TestCatalogRejectsInvalidReadyPattern(t *testing.T) {
 	}
 }
 
-func TestCatalogRejectsInvalidSchemaTwoMetadata(t *testing.T) {
+func TestCatalogRejectsInvalidSchemaThreeMetadata(t *testing.T) {
 	base := ProviderSpec{ID: "test", Name: "Test", Family: "test", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "test", Installer: "test", MenuPath: []string{"apps"}}
 	for name, mutate := range map[string]func(*ProviderSpec){
 		"menu":    func(p *ProviderSpec) { p.MenuPath = []string{"games", "unknown"} },
@@ -77,5 +103,24 @@ func TestCatalogRejectsInvalidSchemaTwoMetadata(t *testing.T) {
 				t.Fatal("invalid metadata was accepted")
 			}
 		})
+	}
+}
+
+func TestCatalogRejectsMutableOrUnpinnedVMImages(t *testing.T) {
+	c, err := LoadCatalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := c.Provider("vm-debian")
+	provider.VMImages = append([]VMImageSpec(nil), provider.VMImages...)
+	provider.VMImages[0].URL = "https://cloud.debian.org/images/cloud/bookworm/latest/image.qcow2"
+	if err := (Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{provider}}).Validate(); err == nil {
+		t.Fatal("mutable VM image URL was accepted")
+	}
+	provider, _ = c.Provider("vm-debian")
+	provider.VMImages = append([]VMImageSpec(nil), provider.VMImages...)
+	provider.VMImages[0].SHA512 = "bad"
+	if err := (Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{provider}}).Validate(); err == nil {
+		t.Fatal("unpinned VM checksum was accepted")
 	}
 }

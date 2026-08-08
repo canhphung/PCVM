@@ -78,6 +78,9 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 	needsResolve := state == nil || state.Provider != spec.ID || req.Version != "latest" && req.Version != state.RequestedVersion || req.Build != "latest" && req.Build != state.RequestedBuild || req.AutoUpdate || req.UpdateRequest != "" && req.UpdateRequest != state.LastUpdateRequest
+	if state != nil && spec.Installer == "qemu-vm" && (req.Version != state.RequestedVersion || req.Build != state.RequestedBuild) {
+		needsResolve = true
+	}
 	if !needsResolve {
 		return a.runState(ctx, *state)
 	}
@@ -105,7 +108,7 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	if requiresReset {
-		if err := a.handleReset(*state, spec, resolved.Artifact.Version, resetReason, req.ResetConfirm); err != nil {
+		if err := a.handleReset(*state, spec, resolved.Artifact.Version+"@"+resolved.Artifact.Build, resetReason, req.ResetConfirm); err != nil {
 			return err
 		}
 		state = nil
@@ -134,6 +137,9 @@ func EvaluateTransition(state *State, target Provider, resolved Resolved) (bool,
 	}
 	if state.Family != target.Spec().Family {
 		return true, "incompatible provider family"
+	}
+	if target.Spec().Installer == "qemu-vm" && (state.ResolvedVersion != resolved.Artifact.Version || state.ResolvedBuild != resolved.Artifact.Build) {
+		return true, "changing a VM distro version or image build requires reset"
 	}
 	if state.Provider == target.Spec().ID && target.CompareVersions(resolved.Artifact.Version, state.ResolvedVersion) < 0 {
 		return true, "downgrade requires reset"

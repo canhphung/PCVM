@@ -1,6 +1,6 @@
 {
-  "schema": 2,
-  "version": "1.3.0",
+  "schema": 3,
+  "version": "1.4.0",
   "providers": [
     {"id":"vanilla","name":"Minecraft Vanilla","family":"minecraft-java-vanilla","architectures":["amd64","arm64"],"runtime":"java","resolver":"mojang","installer":"jar","ready_patterns":["Done \\(","For help, type"],"stop_command":"stop","requires_eula":true,"menu_path":["java"]},
     {"id":"paper","name":"Paper","family":"minecraft-java-bukkit","architectures":["amd64","arm64"],"runtime":"java","resolver":"papermc","installer":"jar","ready_patterns":["Done \\(","For help, type"],"stop_command":"stop","requires_eula":true,"menu_path":["java"],"options":{"project":"paper"}},
@@ -41,7 +41,32 @@
 
     {"id":"node-bot","name":"Node.js Bot","family":"app-node","architectures":["amd64","arm64"],"runtime":"node","resolver":"local-app","installer":"node-app","ready_patterns":[],"stop_command":"","requires_eula":false,"menu_path":["apps"]},
     {"id":"python-bot","name":"Python Bot","family":"app-python","architectures":["amd64","arm64"],"runtime":"python","resolver":"local-app","installer":"python-app","ready_patterns":[],"stop_command":"","requires_eula":false,"menu_path":["apps"]},
-    {"id":"lavalink","name":"Lavalink","family":"audio-lavalink","architectures":["amd64","arm64"],"runtime":"java","resolver":"github-release","installer":"jar","ready_patterns":["Lavalink is ready to accept connections","Started Launcher"],"stop_command":"","requires_eula":false,"menu_path":["apps"],"options":{"repository":"lavalink-devs/Lavalink","asset_regex":"(?i)^Lavalink\\.jar$"}}
+    {"id":"lavalink","name":"Lavalink","family":"audio-lavalink","architectures":["amd64","arm64"],"runtime":"java","resolver":"github-release","installer":"jar","ready_patterns":["Lavalink is ready to accept connections","Started Launcher"],"stop_command":"","requires_eula":false,"menu_path":["apps"],"options":{"repository":"lavalink-devs/Lavalink","asset_regex":"(?i)^Lavalink\\.jar$"}},
+
+    {"id":"vm-ubuntu","name":"Ubuntu Server","family":"vm-ubuntu","architectures":["amd64","arm64"],"runtime":"native","resolver":"vm-image","installer":"qemu-vm","requires_eula":false,"menu_path":["vms","debian-family"],"readiness":{"mode":"regex","patterns":["\\[PCVM-GUEST\\] READY"],"timeout_seconds":900},"control":{"mode":"qmp"},"minimum_memory_mb":1536,"minimum_disk_mb":8192,"vm_images":[
+      {"version":"24.04","build":"20260801","architecture":"amd64","url":"https://cloud-images.ubuntu.com/releases/24.04/release-20260801/ubuntu-24.04-server-cloudimg-amd64.img","format":"qcow2","sha256":"0533b0655c32e68b31d792ecd6ccfca95abdbc536c4446874fe0513bd4140ffe"},
+      {"version":"24.04","build":"20260801","architecture":"arm64","url":"https://cloud-images.ubuntu.com/releases/24.04/release-20260801/ubuntu-24.04-server-cloudimg-arm64.img","format":"qcow2","sha256":"aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476"},
+      {"version":"26.04","build":"20260731","architecture":"amd64","url":"https://cloud-images.ubuntu.com/releases/26.04/release-20260731/ubuntu-26.04-server-cloudimg-amd64.img","format":"qcow2","sha256":"9dc7c5363c0146a08ba0c9aa834d82c2c6dfbb1c471ad9a2f0aba1189e21be05"},
+      {"version":"26.04","build":"20260731","architecture":"arm64","url":"https://cloud-images.ubuntu.com/releases/26.04/release-20260731/ubuntu-26.04-server-cloudimg-arm64.img","format":"qcow2","sha256":"3e113fdd41f39e13729375173bb2ae793f87dc6db4294e5251ff2476971788ba"}
+    ]},
+    {"id":"vm-debian","name":"Debian","family":"vm-debian","architectures":["amd64","arm64"],"runtime":"native","resolver":"vm-image","installer":"qemu-vm","requires_eula":false,"menu_path":["vms","debian-family"],"readiness":{"mode":"regex","patterns":["\\[PCVM-GUEST\\] READY"],"timeout_seconds":900},"control":{"mode":"qmp"},"minimum_memory_mb":1536,"minimum_disk_mb":8192,"vm_images":[
+      {"version":"12","build":"20260806-2562","architecture":"amd64","url":"https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-genericcloud-amd64-20260806-2562.qcow2","format":"qcow2","sha512":"3622c990108a044ed411652f8741e77c5822c365114d7b940206b243f8fb617b8586792df4cdb7afba1b71d1a09289d8ed632124688f2c8352cb08190a1e9868"},
+      {"version":"12","build":"20260806-2562","architecture":"arm64","url":"https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-genericcloud-arm64-20260806-2562.qcow2","format":"qcow2","sha512":"0ddd6ae10dad18535fc8a8167065e78565a04b721cae3e946a3ca4fda2ce54ac7a7546a09b9c0bca6bd101db3ab950056da19dc452113631dc7bbce7c96a404f"},
+      {"version":"13","build":"20260803-2559","architecture":"amd64","url":"https://cloud.debian.org/images/cloud/trixie/20260803-2559/debian-13-genericcloud-amd64-20260803-2559.qcow2","format":"qcow2","sha512":"769562604ecaac26b661167891ef922f71f4d87d50a11423fc04e51444fda0d882c87996dd1181170d233627f4728e6722db2695c0ef753dad762c4ac4ed32e1"},
+      {"version":"13","build":"20260803-2559","architecture":"arm64","url":"https://cloud.debian.org/images/cloud/trixie/20260803-2559/debian-13-genericcloud-arm64-20260803-2559.qcow2","format":"qcow2","sha512":"fa3c6a469deb88835871c04fa4ac5865de7947806c09bb49045f4427ddf8e7a8763ba018526f380958784f6bcdc2786cc55fe58775fe1b066f8ae7f3d9f9de6f"}
+    ]},
+    {"id":"vm-almalinux","name":"AlmaLinux","family":"vm-almalinux","architectures":["amd64","arm64"],"runtime":"native","resolver":"vm-image","installer":"qemu-vm","requires_eula":false,"menu_path":["vms","enterprise-linux"],"readiness":{"mode":"regex","patterns":["\\[PCVM-GUEST\\] READY"],"timeout_seconds":900},"control":{"mode":"qmp"},"minimum_memory_mb":1536,"minimum_disk_mb":8192,"vm_images":[
+      {"version":"9","build":"9.8-20260526","architecture":"amd64","url":"https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-9.8-20260526.x86_64.qcow2","format":"qcow2","sha256":"c397eed7023e92c841155831b1f47e26300e5bef0f0256c129322307c897a251"},
+      {"version":"9","build":"9.8-20260526","architecture":"arm64","url":"https://repo.almalinux.org/almalinux/9/cloud/aarch64/images/AlmaLinux-9-GenericCloud-9.8-20260526.aarch64.qcow2","format":"qcow2","sha256":"b5d883c5f84c68a9828fbd3aac863f9a723b43f8965a32ff7a1c198301f42a29"},
+      {"version":"10","build":"10.2-20260526.0","architecture":"amd64","url":"https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2","format":"qcow2","sha256":"47f2218668dd4776be140dd92fa3bea700be1766e2c7d88bdfd6a4b50f477b4d"},
+      {"version":"10","build":"10.2-20260526.0","architecture":"arm64","url":"https://repo.almalinux.org/almalinux/10/cloud/aarch64/images/AlmaLinux-10-GenericCloud-10.2-20260526.0.aarch64.qcow2","format":"qcow2","sha256":"336c6861fe0ba9115af00f557ed1b09385a3525612dd0cb9cce7e0486f8e74a4"}
+    ]},
+    {"id":"vm-rocky","name":"Rocky Linux","family":"vm-rocky","architectures":["amd64","arm64"],"runtime":"native","resolver":"vm-image","installer":"qemu-vm","requires_eula":false,"menu_path":["vms","enterprise-linux"],"readiness":{"mode":"regex","patterns":["\\[PCVM-GUEST\\] READY"],"timeout_seconds":900},"control":{"mode":"qmp"},"minimum_memory_mb":1536,"minimum_disk_mb":8192,"vm_images":[
+      {"version":"9","build":"9.8-20260525.0","architecture":"amd64","url":"https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2","format":"qcow2","sha256":"92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8"},
+      {"version":"9","build":"9.8-20260525.0","architecture":"arm64","url":"https://download.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base-9.8-20260525.0.aarch64.qcow2","format":"qcow2","sha256":"24692a444f1f0b8bb95375c38c8b43f8099a115347623691be2c330b40c8a1fe"},
+      {"version":"10","build":"10.2-20260525.0","architecture":"amd64","url":"https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2","format":"qcow2","sha256":"9fc9e9ff16888bb68ac39b0392e25c9c92684d50c85f1cce6ab549363bbc4b48"},
+      {"version":"10","build":"10.2-20260525.0","architecture":"arm64","url":"https://download.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.2-20260525.0.aarch64.qcow2","format":"qcow2","sha256":"457c8375e19496f43a25c4a6169fa11237536c53cef6f85a20ea3c5a751aa0f5"}
+    ]}
   ],
   "runtime_packs": []
 }
