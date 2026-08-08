@@ -11,11 +11,12 @@ import (
 )
 
 type Config struct {
-	Home    string
-	Control string
-	Arch    string
-	Request Request
-	Policy  Policy
+	Home           string
+	Control        string
+	Arch           string
+	AllocationPort int
+	Request        Request
+	Policy         Policy
 }
 
 func ConfigFromEnv() (Config, error) {
@@ -61,7 +62,14 @@ func ConfigFromEnv() (Config, error) {
 	if arch != "amd64" && arch != "arm64" {
 		return Config{}, fmt.Errorf("unsupported architecture %q", arch)
 	}
-	return Config{Home: home, Control: filepath.Join(home, ".multiegg"), Arch: arch, Request: request, Policy: policy}, nil
+	allocationPort := 0
+	if raw := strings.TrimSpace(os.Getenv("SERVER_PORT")); raw != "" {
+		allocationPort, err = strconv.Atoi(raw)
+		if err != nil || allocationPort < 1 || allocationPort > 65535 {
+			return Config{}, fmt.Errorf("SERVER_PORT must be an integer between 1 and 65535")
+		}
+	}
+	return Config{Home: home, Control: filepath.Join(home, ".multiegg"), Arch: arch, AllocationPort: allocationPort, Request: request, Policy: policy}, nil
 }
 
 func envDefault(key, fallback string) string {

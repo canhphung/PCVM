@@ -253,6 +253,13 @@ func (a *App) runState(ctx context.Context, state State) error {
 	if len(state.Command) == 0 {
 		return fmt.Errorf("state contains no command")
 	}
+	allocationChanged, err := a.syncPrimaryAllocation(state)
+	if err != nil {
+		return err
+	}
+	if allocationChanged {
+		a.Log.Printf("configured primary allocation 0.0.0.0:%d for %s", a.Config.AllocationPort, state.Provider)
+	}
 	if _, err := compileReadyPatterns(state.ReadyPatterns); err != nil {
 		spec, ok := a.Catalog.Provider(state.Provider)
 		if !ok {
@@ -268,7 +275,8 @@ func (a *App) runState(ctx context.Context, state State) error {
 			return fmt.Errorf("save repaired state: %w", err)
 		}
 	}
-	return a.Supervisor.Run(ctx, ProcessSpec{Command: state.Command, Directory: state.WorkingDirectory, Environment: state.Environment, ReadyPatterns: state.ReadyPatterns, StopCommand: state.StopCommand, ReadyAfter: 5 * time.Second, ReadyTimeout: 2 * time.Minute, StopTimeout: 30 * time.Second}, a.In, a.Out, a.Err)
+	environment := allocationEnvironment(state.Provider, state.Environment, a.Config.AllocationPort)
+	return a.Supervisor.Run(ctx, ProcessSpec{Command: state.Command, Directory: state.WorkingDirectory, Environment: environment, ReadyPatterns: state.ReadyPatterns, StopCommand: state.StopCommand, ReadyAfter: 5 * time.Second, ReadyTimeout: 2 * time.Minute, StopTimeout: 30 * time.Second}, a.In, a.Out, a.Err)
 }
 
 func (a *App) menu() (string, error) {

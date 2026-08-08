@@ -6,7 +6,7 @@
   "author": "canhphung@users.noreply.github.com",
   "description": "One policy-aware launcher for Minecraft Java, proxies, Bedrock, Node.js, Python and Lavalink. No Panel modifications or arbitrary startup commands.",
   "features": null,
-  "docker_images": {"Smart MultiEgg 1.0.2": "ghcr.io/canhphung/smart-multiegg:1.0.2"},
+  "docker_images": {"Smart MultiEgg 1.0.3": "ghcr.io/canhphung/smart-multiegg:1.0.3"},
   "file_denylist": [],
   "startup": "/usr/local/bin/multiegg run",
   "config": {

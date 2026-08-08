@@ -20,6 +20,8 @@ Waterfall is intentionally excluded because upstream ended maintenance. Each Pte
 3. Keep the release-pinned `ghcr.io/canhphung/smart-multiegg:<version>` image selected.
 4. Create a server, set `SOFTWARE`, version/build and EULA variables, then start it. With `SOFTWARE=interactive`, a first start displays the console menu.
 
+The launcher reads Pterodactyl's built-in `SERVER_PORT` on every start and applies the primary allocation to the active provider. Java servers and PocketMine update `server.properties`; Bedrock updates its game port; Velocity and BungeeCord update their first listener; Lavalink updates `server.port`. Node.js and Python apps receive `SERVER_PORT`, `PORT` and `HOST=0.0.0.0`. Only allocation-owned bind/port keys are changed, and the remaining user configuration is preserved. Secondary allocations remain application-specific in v1.
+
 The egg installation script only creates `/mnt/server/.multiegg`. Installation and later switching happen in the launcher, whose fixed startup command is:
 
 ```text
@@ -62,4 +64,3 @@ docker build -t smart-multiegg:dev .
 Pull requests use only local HTTP fixtures for provider contracts. The scheduled workflow resolves real upstream APIs and regenerates the runtime lock to detect schema or asset changes. CI tests, vets, cross-compiles AMD64/ARM64 and builds a multi-architecture image with SBOM and provenance. Tags matching `v*.*.*` publish a release-pinned egg, image, checksums and a keyless Cosign signature.
 
 The project is MIT licensed and contains no telemetry.
-
