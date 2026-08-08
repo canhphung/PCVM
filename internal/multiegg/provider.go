@@ -272,7 +272,25 @@ func resolvePufferfish(ctx context.Context, req Request, h *HTTPClient) (Artifac
 		return Artifact{}, fmt.Errorf("no successful Pufferfish build")
 	}
 	build := fmt.Sprint(data.LastSuccessfulBuild.Number)
-	return Artifact{URL: fmt.Sprintf("https://ci.pufferfish.host/job/%s/%s/artifact/build/libs/pufferfish-paperclip-%s-R0.1-SNAPSHOT-reobf.jar", job, build, version), FileName: "server.jar", Kind: "jar", Version: version, Build: build}, nil
+	var detail struct {
+		Artifacts []struct {
+			FileName     string `json:"fileName"`
+			RelativePath string `json:"relativePath"`
+		} `json:"artifacts"`
+	}
+	if err := h.JSON(ctx, fmt.Sprintf("https://ci.pufferfish.host/job/%s/%s/api/json", job, build), &detail); err != nil {
+		return Artifact{}, err
+	}
+	for _, item := range detail.Artifacts {
+		if strings.Contains(item.FileName, "paperclip") && strings.HasSuffix(item.FileName, ".jar") {
+			resolvedVersion := version
+			if match := regexp.MustCompile(`paperclip-([0-9.]+)-R`).FindStringSubmatch(item.FileName); len(match) == 2 {
+				resolvedVersion = match[1]
+			}
+			return Artifact{URL: fmt.Sprintf("https://ci.pufferfish.host/job/%s/%s/artifact/%s", job, build, item.RelativePath), FileName: "server.jar", Kind: "jar", Version: resolvedVersion, Build: build}, nil
+		}
+	}
+	return Artifact{}, fmt.Errorf("Pufferfish build %s has no paperclip artifact", build)
 }
 
 func resolveFabric(ctx context.Context, req Request, h *HTTPClient) (Artifact, error) {

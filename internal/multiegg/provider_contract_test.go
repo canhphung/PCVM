@@ -69,3 +69,16 @@ func TestBedrockResolverContractFixture(t *testing.T) {
 		t.Fatalf("%+v", artifact)
 	}
 }
+
+func TestPufferfishResolverUsesJenkinsArtifactFixture(t *testing.T) {
+	fixtures := fixtureTransport{"https://ci.pufferfish.host/job/Pufferfish-1.21/api/json": `{"lastSuccessfulBuild":{"number":39,"url":"https://ci.pufferfish.host/job/Pufferfish-1.21/39/"}}`, "https://ci.pufferfish.host/job/Pufferfish-1.21/39/api/json": `{"artifacts":[{"fileName":"pufferfish-paperclip-1.21.10-R0.1-SNAPSHOT-mojmap.jar","relativePath":"pufferfish-server/build/libs/pufferfish-paperclip-1.21.10-R0.1-SNAPSHOT-mojmap.jar"}]}`}
+	h := NewHTTPClient()
+	h.Client = &http.Client{Transport: fixtures}
+	artifact, err := resolvePufferfish(context.Background(), Request{Version: "latest", Build: "latest"}, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Version != "1.21.10" || !strings.Contains(artifact.URL, "pufferfish-server/build/libs") {
+		t.Fatalf("%+v", artifact)
+	}
+}

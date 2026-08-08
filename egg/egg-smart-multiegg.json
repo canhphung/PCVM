@@ -6,7 +6,7 @@
   "author": "canhphung@users.noreply.github.com",
   "description": "One policy-aware launcher for Minecraft Java, proxies, Bedrock, Node.js, Python and Lavalink. No Panel modifications or arbitrary startup commands.",
   "features": null,
-  "docker_images": {"Smart MultiEgg 1.0.0": "ghcr.io/canhphung/smart-multiegg:1.0.0"},
+  "docker_images": {"Smart MultiEgg 1.0.1": "ghcr.io/canhphung/smart-multiegg:1.0.1"},
   "file_denylist": [],
   "startup": "/usr/local/bin/multiegg run",
   "config": {
@@ -46,4 +46,3 @@
     {"name":"Runtime Cache Limit","description":"ADMIN POLICY: runtime cache cap in MiB.","env_variable":"CACHE_LIMIT_MB","default_value":"2048","user_viewable":false,"user_editable":false,"rules":"required|integer|min:64|max:32768","field_type":"text"}
   ]
 }
-

@@ -95,6 +95,37 @@ func (h *HTTPClient) Text(ctx context.Context, raw string, limit int64) ([]byte,
 	return io.ReadAll(io.LimitReader(resp.Body, limit))
 }
 
+func (h *HTTPClient) Probe(ctx context.Context, raw string) error {
+	if err := h.validate(raw); err != nil {
+		return err
+	}
+	var last error
+	for attempt := 0; attempt < h.Retries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("User-Agent", "Smart-MultiEgg/1 (https://github.com/canhphung/smart-multiegg)")
+		req.Header.Set("Range", "bytes=0-0")
+		resp, err := h.Client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent {
+				return nil
+			}
+			last = fmt.Errorf("artifact probe returned HTTP %d", resp.StatusCode)
+		} else {
+			last = err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
+		}
+	}
+	return last
+}
+
 func (h *HTTPClient) Download(ctx context.Context, artifact Artifact, dest string) (Artifact, error) {
 	resp, err := h.request(ctx, artifact.URL)
 	if err != nil {
