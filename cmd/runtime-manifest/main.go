@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -61,6 +62,23 @@ func main() {
 		fatal(err)
 	}
 	p, err := phpPack(phpAssets)
+	if err != nil {
+		fatal(err)
+	}
+	packs = append(packs, p)
+	for _, arch := range []string{"amd64", "arm64"} {
+		p, err := caddyPack(arch)
+		if err != nil {
+			fatal(err)
+		}
+		packs = append(packs, p)
+	}
+	p, err = dotnetPack("8", "amd64")
+	if err != nil {
+		fatal(err)
+	}
+	packs = append(packs, p)
+	p, err = steamCMDPack()
 	if err != nil {
 		fatal(err)
 	}
@@ -181,6 +199,80 @@ func phpPack(assets []asset) (pcvm.RuntimePackSpec, error) {
 		}
 	}
 	return pcvm.RuntimePackSpec{}, fmt.Errorf("no digested PocketMine PHP Linux x86_64 asset")
+}
+
+func caddyPack(arch string) (pcvm.RuntimePackSpec, error) {
+	assets, err := githubAssets("caddyserver/caddy")
+	if err != nil {
+		return pcvm.RuntimePackSpec{}, err
+	}
+	assetArch := map[string]string{"amd64": "amd64", "arm64": "arm64"}[arch]
+	pattern := "_linux_" + assetArch + ".tar.gz"
+	for _, a := range assets {
+		if strings.HasSuffix(a.Name, pattern) && len(a.Digest) == 64 {
+			return pcvm.RuntimePackSpec{Kind: "caddy", Version: "2", Architecture: arch, URL: a.URL, SHA256: a.Digest, Executable: "caddy", Archive: "tar.gz"}, nil
+		}
+	}
+	return pcvm.RuntimePackSpec{}, fmt.Errorf("no digested Caddy Linux %s asset", arch)
+}
+
+func dotnetPack(major, arch string) (pcvm.RuntimePackSpec, error) {
+	var metadata struct {
+		LatestRuntime string `json:"latest-runtime"`
+		Releases      []struct {
+			Runtime struct {
+				Version string `json:"version"`
+				Files   []struct {
+					Name, RID, URL, Hash string
+				} `json:"files"`
+			} `json:"runtime"`
+		} `json:"releases"`
+	}
+	if err := getJSON("https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/"+major+".0/releases.json", &metadata); err != nil {
+		return pcvm.RuntimePackSpec{}, err
+	}
+	rid := map[string]string{"amd64": "linux-x64", "arm64": "linux-arm64"}[arch]
+	for _, release := range metadata.Releases {
+		if release.Runtime.Version != metadata.LatestRuntime {
+			continue
+		}
+		for _, file := range release.Runtime.Files {
+			if file.RID == rid && strings.HasSuffix(file.Name, ".tar.gz") {
+				checksum, err := sha256URL(file.URL, 512<<20)
+				if err != nil {
+					return pcvm.RuntimePackSpec{}, fmt.Errorf("hash .NET %s runtime: %w", major, err)
+				}
+				return pcvm.RuntimePackSpec{Kind: "dotnet", Version: major, Architecture: arch, URL: file.URL, SHA256: checksum, Executable: "dotnet", Archive: "tar.gz"}, nil
+			}
+		}
+	}
+	return pcvm.RuntimePackSpec{}, fmt.Errorf("no .NET %s runtime for %s", major, arch)
+}
+
+func steamCMDPack() (pcvm.RuntimePackSpec, error) {
+	raw := "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz"
+	checksum, err := sha256URL(raw, 128<<20)
+	if err != nil {
+		return pcvm.RuntimePackSpec{}, err
+	}
+	return pcvm.RuntimePackSpec{Kind: "steamcmd", Version: "1", Architecture: "amd64", URL: raw, SHA256: checksum, Executable: "steamcmd.sh", Archive: "tar.gz"}, nil
+}
+
+func sha256URL(raw string, limit int64) (string, error) {
+	body, err := request(raw)
+	if err != nil {
+		return "", err
+	}
+	defer body.Close()
+	hash := sha256.New()
+	written, err := io.Copy(hash, io.LimitReader(body, limit+1))
+	if err != nil {
+		return "", err
+	}
+	if written > limit {
+		return "", fmt.Errorf("download exceeds %d bytes", limit)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func getJSON(raw string, value any) error {

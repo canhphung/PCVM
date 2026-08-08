@@ -10,8 +10,8 @@ func TestEmbeddedCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Providers) != 14 {
-		t.Fatalf("providers=%d, want 14", len(c.Providers))
+	if len(c.Providers) != 32 {
+		t.Fatalf("providers=%d, want 32", len(c.Providers))
 	}
 	if _, ok := c.Provider("waterfall"); ok {
 		t.Fatal("Waterfall must not be shipped")
@@ -34,7 +34,7 @@ func TestEmbeddedCatalog(t *testing.T) {
 }
 
 func TestCatalogRejectsDuplicateAndUnpinnedRuntime(t *testing.T) {
-	c := Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{{ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Resolver: "x", Installer: "x"}, {ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Resolver: "x", Installer: "x"}}}
+	c := Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{{ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "x", Installer: "x", MenuPath: []string{"apps"}}, {ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "x", Installer: "x", MenuPath: []string{"apps"}}}}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected duplicate error")
 	}
@@ -48,9 +48,27 @@ func TestCatalogRejectsDuplicateAndUnpinnedRuntime(t *testing.T) {
 func TestCatalogRejectsInvalidReadyPattern(t *testing.T) {
 	c := Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{{
 		ID: "broken", Name: "Broken", Family: "test", Architectures: []string{"amd64"},
-		Resolver: "test", Installer: "test", ReadyPatterns: []string{"Done ("},
+		Runtime: "native", Resolver: "test", Installer: "test", ReadyPatterns: []string{"Done ("}, MenuPath: []string{"apps"},
 	}}}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected invalid ready pattern error")
+	}
+}
+
+func TestCatalogRejectsInvalidSchemaTwoMetadata(t *testing.T) {
+	base := ProviderSpec{ID: "test", Name: "Test", Family: "test", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "test", Installer: "test", MenuPath: []string{"apps"}}
+	for name, mutate := range map[string]func(*ProviderSpec){
+		"menu":    func(p *ProviderSpec) { p.MenuPath = []string{"games", "unknown"} },
+		"arch":    func(p *ProviderSpec) { p.Architectures = []string{"amd64", "amd64"} },
+		"tcp":     func(p *ProviderSpec) { p.Readiness = ReadinessSpec{Mode: "tcp", PortVariable: "BAD_PORT"} },
+		"control": func(p *ProviderSpec) { p.Control = ControlSpec{Mode: "source-rcon"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			provider := base
+			mutate(&provider)
+			if err := (Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{provider}}).Validate(); err == nil {
+				t.Fatal("invalid metadata was accepted")
+			}
+		})
 	}
 }

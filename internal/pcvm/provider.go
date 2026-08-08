@@ -23,6 +23,23 @@ func NewProvider(spec ProviderSpec) Provider               { return &catalogProv
 func (p *catalogProvider) Spec() ProviderSpec              { return p.spec }
 func (p *catalogProvider) CompareVersions(a, b string) int { return CompareVersions(a, b) }
 
+func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state State) (ProcessSpec, error) {
+	if p.spec.Installer == "web" || len(p.spec.MenuPath) > 0 && p.spec.MenuPath[0] == "games" {
+		return p.buildServiceProcess(ctx, cfg, state)
+	}
+	readiness := p.spec.Readiness
+	if readiness.Mode == "" && len(state.ReadyPatterns) > 0 {
+		readiness = ReadinessSpec{Mode: "regex", Patterns: append([]string(nil), state.ReadyPatterns...)}
+	}
+	control := p.spec.Control
+	if control.Mode == "" {
+		control = ControlSpec{Mode: "stdin", StopCommand: state.StopCommand}
+	}
+	return ProcessSpec{Command: append([]string(nil), state.Command...), Directory: state.WorkingDirectory,
+		Environment: append([]string(nil), state.Environment...), ReadyPatterns: append([]string(nil), state.ReadyPatterns...),
+		StopCommand: state.StopCommand, Readiness: readiness, Control: control}, nil
+}
+
 func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPClient) (Resolved, error) {
 	var artifact Artifact
 	var err error
@@ -51,6 +68,14 @@ func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPC
 		artifact, err = resolveGitHub(ctx, req, httpc, p.spec.Options["repository"], p.spec.Options["asset_regex"])
 	case "local-app":
 		artifact = Artifact{Kind: "source", Version: req.Version, Build: req.Build}
+	case "local-service":
+		artifact = Artifact{Kind: "local", Version: "system", Build: "release"}
+	case "steamcmd":
+		artifact = Artifact{Kind: "steam-app", Version: envLatest(req.Version), Build: envLatest(req.Build), Metadata: map[string]string{"appid": p.spec.Options["appid"]}}
+	case "terraria":
+		artifact, err = resolveTerraria(ctx, req, httpc)
+	case "factorio":
+		artifact, err = resolveFactorio(ctx, req, httpc)
 	default:
 		err = fmt.Errorf("unsupported resolver %q", p.spec.Resolver)
 	}
@@ -75,6 +100,12 @@ func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPC
 			runtimeVersion = "3.13"
 		case "php-pmmp":
 			runtimeVersion = "pmmp"
+		case "steamcmd":
+			runtimeVersion = "1"
+		case "dotnet":
+			runtimeVersion = "8"
+		case "caddy":
+			runtimeVersion = "2"
 		default:
 			runtimeVersion = "native"
 		}
@@ -84,6 +115,54 @@ func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPC
 		patterns = []string{req.AppReady}
 	}
 	return Resolved{Artifact: artifact, RuntimeKind: p.spec.Runtime, RuntimeVersion: runtimeVersion, ReadyPatterns: patterns, StopCommand: p.spec.StopCommand}, nil
+}
+
+func envLatest(value string) string {
+	if value == "" {
+		return "latest"
+	}
+	return value
+}
+
+func resolveTerraria(ctx context.Context, req Request, h *HTTPClient) (Artifact, error) {
+	var names []string
+	if err := h.JSON(ctx, "https://terraria.org/api/get/dedicated-servers-names", &names); err != nil {
+		return Artifact{}, err
+	}
+	if len(names) == 0 {
+		return Artifact{}, fmt.Errorf("Terraria returned no dedicated server releases")
+	}
+	name := names[0]
+	if req.Version != "" && req.Version != "latest" {
+		digits := strings.ReplaceAll(req.Version, ".", "")
+		name = "terraria-server-" + digits + ".zip"
+	}
+	version := strings.TrimSuffix(strings.TrimPrefix(name, "terraria-server-"), ".zip")
+	return Artifact{URL: "https://terraria.org/api/download/pc-dedicated-server/" + name, FileName: name, Kind: "zip", Version: version, Build: "release"}, nil
+}
+
+func resolveFactorio(ctx context.Context, req Request, h *HTTPClient) (Artifact, error) {
+	var releases struct {
+		Stable struct {
+			Headless string `json:"headless"`
+		} `json:"stable"`
+		Experimental struct {
+			Headless string `json:"headless"`
+		} `json:"experimental"`
+	}
+	if err := h.JSON(ctx, "https://factorio.com/api/latest-releases", &releases); err != nil {
+		return Artifact{}, err
+	}
+	version := req.Version
+	if version == "" || version == "latest" {
+		version = releases.Stable.Headless
+	} else if version == "experimental" {
+		version = releases.Experimental.Headless
+	}
+	if version == "" {
+		return Artifact{}, fmt.Errorf("Factorio returned no headless release")
+	}
+	return Artifact{URL: "https://www.factorio.com/get-download/" + url.PathEscape(version) + "/headless/linux64", FileName: "factorio-" + version + ".tar.xz", Kind: "tar.xz", Version: version, Build: "release"}, nil
 }
 
 func latestOr(want string, values []string) (string, error) {
@@ -412,8 +491,9 @@ func resolveGitHub(ctx context.Context, req Request, h *HTTPClient, repo, assetP
 	var release struct {
 		Tag    string `json:"tag_name"`
 		Assets []struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
+			Name   string `json:"name"`
+			URL    string `json:"browser_download_url"`
+			Digest string `json:"digest"`
 		} `json:"assets"`
 	}
 	endpoint := "https://api.github.com/repos/" + repo + "/releases/latest"
@@ -433,7 +513,7 @@ func resolveGitHub(ctx context.Context, req Request, h *HTTPClient, repo, assetP
 			if strings.HasSuffix(strings.ToLower(a.Name), ".phar") {
 				kind = "phar"
 			}
-			return Artifact{URL: a.URL, FileName: a.Name, Kind: kind, Version: release.Tag, Build: "release"}, nil
+			return Artifact{URL: a.URL, FileName: a.Name, Kind: kind, SHA256: strings.TrimPrefix(a.Digest, "sha256:"), Version: release.Tag, Build: "release"}, nil
 		}
 	}
 	return Artifact{}, fmt.Errorf("release contains no matching artifact")
@@ -509,6 +589,16 @@ func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolv
 		}
 	case "node-app", "python-app":
 		return p.installApp(ctx, ic, resolved)
+	case "web":
+		return p.installWeb(ic, resolved)
+	case "steamcmd":
+		return p.installSteam(ctx, ic, resolved)
+	case "terraria":
+		return p.installTerraria(ic, resolved)
+	case "factorio":
+		return p.installFactorio(ctx, ic, resolved)
+	case "tmodloader":
+		return p.installTModLoader(ic, resolved)
 	default:
 		return resolved, fmt.Errorf("unsupported installer %q", p.spec.Installer)
 	}

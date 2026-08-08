@@ -23,4 +23,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           go run ./cmd/runtime-manifest -out /tmp/runtime-manifest.json
-          jq -e 'length == 23 and all(.[]; (.sha256 | length) == 64)' /tmp/runtime-manifest.json
+          jq -e 'length == 27 and all(.[]; (.sha256 | length) == 64)' /tmp/runtime-manifest.json
+          diff -u runtime-manifest.json /tmp/runtime-manifest.json
+      - name: Validate Steam App IDs without downloading games
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libc6:i386 lib32gcc-s1
+          url=$(jq -r '.[] | select(.kind == "steamcmd" and .architecture == "amd64") | .url' runtime-manifest.json)
+          sha=$(jq -r '.[] | select(.kind == "steamcmd" and .architecture == "amd64") | .sha256' runtime-manifest.json)
+          curl --fail --location --retry 3 "$url" -o /tmp/steamcmd.tar.gz
+          echo "$sha  /tmp/steamcmd.tar.gz" | sha256sum --check
+          mkdir /tmp/steamcmd
+          tar -xzf /tmp/steamcmd.tar.gz -C /tmp/steamcmd
+          /tmp/steamcmd/steamcmd.sh +login anonymous +app_info_update 1 +app_info_print 730 +app_info_print 4020 +app_info_print 222860 +app_info_print 2394010 +app_info_print 258550 +app_info_print 380870 +app_info_print 896660 +app_info_print 294420 +app_info_print 1110390 +app_info_print 1690800 +quit | tee /tmp/steam-apps.log
+          for appid in 730 4020 222860 2394010 258550 380870 896660 294420 1110390 1690800; do
+            grep -Fq "\"${appid}\"" /tmp/steam-apps.log
+          done

@@ -46,3 +46,15 @@ func TestLegacyBrandNameNormalizesToPCVM(t *testing.T) {
 		t.Fatalf("brand=%q", cfg.Policy.BrandName)
 	}
 }
+
+func TestInvalidMaxPlayersIsNotSilentlyDefaulted(t *testing.T) {
+	t.Setenv("PCVM_HOME", t.TempDir())
+	t.Setenv("MAX_PLAYERS", "many")
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateProviderRequest(catalogSpec(t, "rust"), cfg); err == nil {
+		t.Fatal("invalid MAX_PLAYERS was accepted")
+	}
+}

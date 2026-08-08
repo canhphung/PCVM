@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +18,57 @@ import (
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
+}
+
+func TestSupervisorTCPReadiness(t *testing.T) {
+	if os.Getenv("PCVM_TCP_HELPER") == "1" {
+		listener, err := net.Listen("tcp", "127.0.0.1:"+os.Getenv("PCVM_TCP_PORT"))
+		if err != nil {
+			os.Exit(4)
+		}
+		defer listener.Close()
+		scan := bufio.NewScanner(os.Stdin)
+		for scan.Scan() {
+			if scan.Text() == "stop" {
+				os.Exit(0)
+			}
+		}
+		os.Exit(3)
+	}
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	var output lockedBuffer
+	done := make(chan error, 1)
+	s := ProcessSupervisor{Log: NewLogger(io.Discard)}
+	go func() {
+		done <- s.Run(ctx, ProcessSpec{
+			Command:     []string{os.Args[0], "-test.run=TestSupervisorTCPReadiness"},
+			Environment: []string{"PCVM_TCP_HELPER=1", "PCVM_TCP_PORT=" + strconv.Itoa(port)},
+			Readiness:   ReadinessSpec{Mode: "tcp", PortVariable: strconv.Itoa(port)},
+			Control:     ControlSpec{Mode: "stdin", StopCommand: "stop"}, StopTimeout: 3 * time.Second,
+		}, strings.NewReader(""), &output, &output)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(output.String(), "[PCVM] READY") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(output.String(), "[PCVM] READY") {
+		t.Fatalf("not ready: %s", output.String())
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("TCP-ready process did not stop")
+	}
 }
 
 func (b *lockedBuffer) Write(p []byte) (int, error) {

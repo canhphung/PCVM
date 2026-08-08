@@ -45,14 +45,65 @@ func (c Catalog) Validate() error {
 			return fmt.Errorf("duplicate provider %q", p.ID)
 		}
 		seen[p.ID] = true
-		if p.Name == "" || p.Family == "" || p.Resolver == "" || p.Installer == "" {
+		if p.Name == "" || p.Family == "" || p.Runtime == "" || p.Resolver == "" || p.Installer == "" {
 			return fmt.Errorf("provider %q has incomplete metadata", p.ID)
 		}
 		if len(p.Architectures) == 0 {
 			return fmt.Errorf("provider %q has no architectures", p.ID)
 		}
-		if _, err := compileReadyPatterns(p.ReadyPatterns); err != nil {
+		if len(p.MenuPath) == 0 {
+			return fmt.Errorf("provider %q has no menu path", p.ID)
+		}
+		if !validMenuPath(p.MenuPath) {
+			return fmt.Errorf("provider %q has invalid menu path %q", p.ID, p.MenuPath)
+		}
+		archSeen := map[string]bool{}
+		for _, arch := range p.Architectures {
+			if arch != "amd64" && arch != "arm64" || archSeen[arch] {
+				return fmt.Errorf("provider %q has invalid or duplicate architecture %q", p.ID, arch)
+			}
+			archSeen[arch] = true
+		}
+		if p.MinimumMemory < 0 || p.MinimumDisk < 0 {
+			return fmt.Errorf("provider %q has invalid resource metadata", p.ID)
+		}
+		patterns := p.ReadyPatterns
+		if len(p.Readiness.Patterns) > 0 {
+			patterns = p.Readiness.Patterns
+		}
+		if _, err := compileReadyPatterns(patterns); err != nil {
 			return fmt.Errorf("provider %q has invalid readiness metadata: %w", p.ID, err)
+		}
+		switch p.Readiness.Mode {
+		case "", "regex", "tcp", "delay":
+		default:
+			return fmt.Errorf("provider %q has unsupported readiness mode %q", p.ID, p.Readiness.Mode)
+		}
+		if p.Readiness.Mode == "regex" && len(patterns) == 0 {
+			return fmt.Errorf("provider %q has regex readiness without patterns", p.ID)
+		}
+		if p.Readiness.Mode == "tcp" && !validPortVariable(p.Readiness.PortVariable) {
+			return fmt.Errorf("provider %q has invalid TCP readiness port %q", p.ID, p.Readiness.PortVariable)
+		}
+		switch p.Control.Mode {
+		case "", "stdin", "source-rcon", "telnet", "signal":
+		default:
+			return fmt.Errorf("provider %q has unsupported control mode %q", p.ID, p.Control.Mode)
+		}
+		portSeen := map[string]bool{}
+		for _, requirement := range p.Ports {
+			if !validPortVariable(requirement.Variable) || portSeen[requirement.Variable] {
+				return fmt.Errorf("provider %q has invalid or duplicate port variable %q", p.ID, requirement.Variable)
+			}
+			portSeen[requirement.Variable] = true
+		}
+		if (p.Control.Mode == "source-rcon" || p.Control.Mode == "telnet") && !validPortVariable(p.Control.PortVariable) {
+			return fmt.Errorf("provider %q has invalid control port %q", p.ID, p.Control.PortVariable)
+		}
+		if p.Installer == "steamcmd" {
+			if !regexp.MustCompile(`^[0-9]+$`).MatchString(p.Options["appid"]) || p.Options["executable"] == "" || !contains(p.Architectures, "amd64") || contains(p.Architectures, "arm64") {
+				return fmt.Errorf("provider %q has invalid Steam metadata", p.ID)
+			}
 		}
 	}
 	for _, pack := range c.RuntimePacks {
@@ -64,6 +115,31 @@ func (c Catalog) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validMenuPath(path []string) bool {
+	if len(path) == 1 {
+		switch path[0] {
+		case "java", "proxy", "bedrock", "web", "apps":
+			return true
+		}
+	}
+	if len(path) == 2 && path[0] == "games" {
+		switch path[1] {
+		case "source", "survival", "sandbox":
+			return true
+		}
+	}
+	return false
+}
+
+func validPortVariable(value string) bool {
+	switch value {
+	case "SERVER_PORT", "QUERY_PORT", "STEAM_PORT", "RELIABLE_PORT", "GAME_PORT_2", "GAME_PORT_3", "RCON_PORT", "TELNET_PORT":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c Catalog) Provider(id string) (ProviderSpec, bool) {
