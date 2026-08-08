@@ -26,6 +26,11 @@ jobs:
         run: |
           echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm" >> "$GITHUB_ENV"
+      - name: Verify synchronized SemVer assets
+        run: |
+          test "$(jq -r '.version' internal/pcvm/catalog.json)" = "$VERSION"
+          test "$(jq -r '.docker_images | to_entries[0].key' egg/egg-pcvm.json)" = "PCVM $VERSION"
+          test "$(jq -r '.docker_images | to_entries[0].value' egg/egg-pcvm.json)" = "$IMAGE:$VERSION"
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io

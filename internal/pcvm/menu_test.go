@@ -66,3 +66,20 @@ func TestGroupedMenuHidesEmptyCategoriesAndRetries(t *testing.T) {
 		t.Fatalf("invalid choices were not retried:\n%s", text)
 	}
 }
+
+func TestGameMenuUsesThreeLevels(t *testing.T) {
+	app, output := menuTestApp(t, "1\n2\n1\n", map[string]bool{"cs2": true, "rust": true, "factorio": true})
+	selected, err := app.menu()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "rust" {
+		t.Fatalf("selected=%q, want rust", selected)
+	}
+	text := output.String()
+	for _, want := range []string{"Game Servers", "Source & FPS", "Survival", "Sandbox & Automation", "Selected: Rust [rust]"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("game menu missing %q:\n%s", want, text)
+		}
+	}
+}

@@ -67,7 +67,10 @@ func (m RuntimeManager) Ensure(ctx context.Context, kind, version string) (strin
 		return executable, nil
 	}
 	if m.Config.Policy.AllowSystemPath {
-		binary := map[string]string{"java": "java", "node": "node", "python": "python3", "php-pmmp": "php"}[kind]
+		binary := map[string]string{
+			"java": "java", "node": "node", "python": "python3", "php-pmmp": "php",
+			"caddy": "caddy", "dotnet": "dotnet", "steamcmd": "steamcmd.sh",
+		}[kind]
 		if path, err := exec.LookPath(binary); err == nil {
 			m.Log.Printf("WARNING: using system %s because PCVM_ALLOW_SYSTEM_RUNTIME=1", binary)
 			return path, nil

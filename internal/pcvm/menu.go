@@ -22,11 +22,25 @@ type menuCategory struct {
 	Description string
 }
 
-var menuCategoryOrder = []menuCategory{
-	{ID: "java", Name: "Minecraft Java", Description: "Vanilla, optimized servers and mod loaders"},
-	{ID: "proxy", Name: "Minecraft Proxies", Description: "Route players between backend servers"},
-	{ID: "bedrock", Name: "Minecraft Bedrock", Description: "Official Bedrock and PocketMine-MP"},
-	{ID: "apps", Name: "Applications & Bots", Description: "Node.js, Python and Lavalink"},
+var menuCategories = map[string]menuCategory{
+	"java":     {ID: "java", Name: "Minecraft Java", Description: "Vanilla, optimized servers and mod loaders"},
+	"proxy":    {ID: "proxy", Name: "Minecraft Proxies", Description: "Route players between backend servers"},
+	"bedrock":  {ID: "bedrock", Name: "Minecraft Bedrock", Description: "Official Bedrock and PocketMine-MP"},
+	"games":    {ID: "games", Name: "Game Servers", Description: "Native Linux dedicated game servers"},
+	"source":   {ID: "source", Name: "Source & FPS", Description: "Counter-Strike, Garry's Mod and Left 4 Dead"},
+	"survival": {ID: "survival", Name: "Survival", Description: "Persistent survival and co-op worlds"},
+	"sandbox":  {ID: "sandbox", Name: "Sandbox & Automation", Description: "Building, automation and sandbox games"},
+	"web":      {ID: "web", Name: "Web Servers", Description: "Static hosting and reverse proxies"},
+	"apps":     {ID: "apps", Name: "Applications & Bots", Description: "Node.js, Python and Lavalink"},
+}
+
+var menuRootOrder = []string{"java", "proxy", "bedrock", "games", "web", "apps"}
+var menuGameOrder = []string{"source", "survival", "sandbox"}
+
+type menuNode struct {
+	ID        string
+	Providers []ProviderSpec
+	Children  map[string]*menuNode
 }
 
 func (a *App) menu() (string, error) {
@@ -40,21 +54,37 @@ func (a *App) menu() (string, error) {
 	if len(filtered) == 0 {
 		return "", fmt.Errorf("host policy exposes no providers")
 	}
-	groups := make(map[string][]ProviderSpec)
-	for _, provider := range filtered {
-		category := providerMenuCategory(provider.ID)
-		groups[category] = append(groups[category], provider)
-	}
-	categories := make([]menuCategory, 0, len(menuCategoryOrder))
-	for _, category := range menuCategoryOrder {
-		if len(groups[category.ID]) > 0 {
-			categories = append(categories, category)
-		}
-	}
+	root := buildMenuTree(filtered)
 	reader := bufio.NewReader(a.In)
 	a.renderMenuHeader()
+	return a.selectMenuNode(reader, root, true)
+}
+
+func buildMenuTree(providers []ProviderSpec) *menuNode {
+	root := &menuNode{Children: map[string]*menuNode{}}
+	for _, provider := range providers {
+		node := root
+		for _, id := range provider.MenuPath {
+			if node.Children == nil {
+				node.Children = map[string]*menuNode{}
+			}
+			if node.Children[id] == nil {
+				node.Children[id] = &menuNode{ID: id, Children: map[string]*menuNode{}}
+			}
+			node = node.Children[id]
+		}
+		node.Providers = append(node.Providers, provider)
+	}
+	return root
+}
+
+func (a *App) selectMenuNode(reader *bufio.Reader, node *menuNode, root bool) (string, error) {
+	if len(node.Children) == 0 {
+		return a.selectProvider(reader, node)
+	}
 	for {
-		a.renderCategoryMenu(categories, groups)
+		children := orderedMenuChildren(node)
+		a.renderCategoryMenu(node, children, root)
 		choice, err := readMenuChoice(reader)
 		if err != nil {
 			return "", err
@@ -62,35 +92,75 @@ func (a *App) menu() (string, error) {
 		if strings.EqualFold(choice, "q") {
 			return "", fmt.Errorf("software selection cancelled")
 		}
-		categoryIndex, err := strconv.Atoi(choice)
-		if err != nil || categoryIndex < 1 || categoryIndex > len(categories) {
-			a.menuWarning("Choose a category number from 1 to %d, or q to quit.", len(categories))
+		if !root && strings.EqualFold(choice, "b") {
+			return "", errMenuBack
+		}
+		index, parseErr := strconv.Atoi(choice)
+		if parseErr != nil || index < 1 || index > len(children) {
+			a.menuWarning("Choose a category number from 1 to %d, %s.", len(children), menuChoiceHelp(root))
 			continue
 		}
-		category := categories[categoryIndex-1]
-		providers := groups[category.ID]
-		for {
-			a.renderProviderMenu(category, providers)
-			choice, err = readMenuChoice(reader)
-			if err != nil {
-				return "", err
-			}
-			if strings.EqualFold(choice, "b") {
-				break
-			}
-			if strings.EqualFold(choice, "q") {
-				return "", fmt.Errorf("software selection cancelled")
-			}
-			providerIndex, parseErr := strconv.Atoi(choice)
-			if parseErr != nil || providerIndex < 1 || providerIndex > len(providers) {
-				a.menuWarning("Choose a software number from 1 to %d, b to go back, or q to quit.", len(providers))
-				continue
-			}
-			selected := providers[providerIndex-1]
-			fmt.Fprintf(a.Out, "\n%sSelected:%s %s %s[%s]%s\n\n", menuGreen(), menuReset(), selected.Name, menuDim(), selected.ID, menuReset())
-			return selected.ID, nil
+		selected, selectErr := a.selectMenuNode(reader, children[index-1], false)
+		if errors.Is(selectErr, errMenuBack) {
+			continue
+		}
+		return selected, selectErr
+	}
+}
+
+var errMenuBack = errors.New("menu back")
+
+func (a *App) selectProvider(reader *bufio.Reader, node *menuNode) (string, error) {
+	for {
+		a.renderProviderMenu(menuCategories[node.ID], node.Providers)
+		choice, err := readMenuChoice(reader)
+		if err != nil {
+			return "", err
+		}
+		if strings.EqualFold(choice, "b") {
+			return "", errMenuBack
+		}
+		if strings.EqualFold(choice, "q") {
+			return "", fmt.Errorf("software selection cancelled")
+		}
+		index, parseErr := strconv.Atoi(choice)
+		if parseErr != nil || index < 1 || index > len(node.Providers) {
+			a.menuWarning("Choose a software number from 1 to %d, b to go back, or q to quit.", len(node.Providers))
+			continue
+		}
+		selected := node.Providers[index-1]
+		fmt.Fprintf(a.Out, "\n%sSelected:%s %s %s[%s]%s\n\n", menuGreen(), menuReset(), selected.Name, menuDim(), selected.ID, menuReset())
+		return selected.ID, nil
+	}
+}
+
+func orderedMenuChildren(node *menuNode) []*menuNode {
+	order := menuRootOrder
+	if node.ID == "games" {
+		order = menuGameOrder
+	}
+	out := make([]*menuNode, 0, len(node.Children))
+	for _, id := range order {
+		if child := node.Children[id]; child != nil {
+			out = append(out, child)
 		}
 	}
+	return out
+}
+
+func menuLeafCount(node *menuNode) int {
+	total := len(node.Providers)
+	for _, child := range node.Children {
+		total += menuLeafCount(child)
+	}
+	return total
+}
+
+func menuChoiceHelp(root bool) string {
+	if root {
+		return "or q to quit"
+	}
+	return "b to go back, or q to quit"
 }
 
 func (a *App) renderMenuHeader() {
@@ -98,13 +168,22 @@ func (a *App) renderMenuHeader() {
 	fmt.Fprintf(a.Out, "%s%s%s  %s%s%s  %s(%s)%s\n", menuBold(), a.Config.Policy.BrandName, menuReset(), menuDim(), "Pterodactyl multi-provider launcher", menuReset(), menuDim(), a.Config.Arch, menuReset())
 }
 
-func (a *App) renderCategoryMenu(categories []menuCategory, groups map[string][]ProviderSpec) {
-	fmt.Fprintf(a.Out, "\n%s╭─ SELECT A SOFTWARE CATEGORY ─────────────────────────────╮%s\n", menuBlue(), menuReset())
-	for index, category := range categories {
-		fmt.Fprintf(a.Out, "%s│%s  %s[%d]%s %-22s %2d software                  %s│%s\n", menuBlue(), menuReset(), menuYellow(), index+1, menuReset(), category.Name, len(groups[category.ID]), menuBlue(), menuReset())
+func (a *App) renderCategoryMenu(parent *menuNode, children []*menuNode, root bool) {
+	title := "SELECT A SOFTWARE CATEGORY"
+	if parent.ID != "" {
+		title = strings.ToUpper(menuCategories[parent.ID].Name)
+	}
+	fmt.Fprintf(a.Out, "\n%s╭─ %-56s╮%s\n", menuBlue(), title+" ", menuReset())
+	for index, child := range children {
+		category := menuCategories[child.ID]
+		fmt.Fprintf(a.Out, "%s│%s  %s[%d]%s %-22s %2d software                  %s│%s\n", menuBlue(), menuReset(), menuYellow(), index+1, menuReset(), category.Name, menuLeafCount(child), menuBlue(), menuReset())
 		fmt.Fprintf(a.Out, "%s│%s      %s%-52s%s%s│%s\n", menuBlue(), menuReset(), menuDim(), category.Description, menuReset(), menuBlue(), menuReset())
 	}
-	fmt.Fprintf(a.Out, "%s│%s  %s[q]%s Quit                                                %s│%s\n", menuBlue(), menuReset(), menuYellow(), menuReset(), menuBlue(), menuReset())
+	if root {
+		fmt.Fprintf(a.Out, "%s│%s  %s[q]%s Quit                                                %s│%s\n", menuBlue(), menuReset(), menuYellow(), menuReset(), menuBlue(), menuReset())
+	} else {
+		fmt.Fprintf(a.Out, "%s│%s  %s[b]%s Back        %s[q]%s Quit                                %s│%s\n", menuBlue(), menuReset(), menuYellow(), menuReset(), menuYellow(), menuReset(), menuBlue(), menuReset())
+	}
 	fmt.Fprintf(a.Out, "%s╰──────────────────────────────────────────────────────────╯%s\n", menuBlue(), menuReset())
 	fmt.Fprintf(a.Out, "%sSelect category%s › ", menuBold(), menuReset())
 }
@@ -134,19 +213,6 @@ func readMenuChoice(reader *bufio.Reader) (string, error) {
 		return "", fmt.Errorf("console input closed during software selection")
 	}
 	return "", err
-}
-
-func providerMenuCategory(providerID string) string {
-	switch providerID {
-	case "vanilla", "paper", "purpur", "pufferfish", "fabric", "forge", "neoforge":
-		return "java"
-	case "velocity", "bungeecord":
-		return "proxy"
-	case "bedrock", "pocketmine":
-		return "bedrock"
-	default:
-		return "apps"
-	}
 }
 
 func menuColors() bool { return os.Getenv("NO_COLOR") == "" && os.Getenv("PCVM_COLOR") != "0" }

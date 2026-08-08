@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	StateSchema   = 1
-	CatalogSchema = 1
+	StateSchema   = 2
+	CatalogSchema = 2
 )
 
 type Catalog struct {
@@ -30,6 +30,32 @@ type ProviderSpec struct {
 	StopCommand   string            `json:"stop_command"`
 	RequiresEULA  bool              `json:"requires_eula"`
 	Options       map[string]string `json:"options,omitempty"`
+	MenuPath      []string          `json:"menu_path"`
+	Ports         []PortRequirement `json:"ports,omitempty"`
+	Readiness     ReadinessSpec     `json:"readiness,omitempty"`
+	Control       ControlSpec       `json:"control,omitempty"`
+	MinimumMemory int               `json:"minimum_memory_mb,omitempty"`
+	MinimumDisk   int               `json:"minimum_disk_mb,omitempty"`
+}
+
+type PortRequirement struct {
+	Variable string `json:"variable"`
+	Offset   int    `json:"offset,omitempty"`
+	Internal bool   `json:"internal,omitempty"`
+}
+
+type ReadinessSpec struct {
+	Mode           string   `json:"mode,omitempty"`
+	Patterns       []string `json:"patterns,omitempty"`
+	PortVariable   string   `json:"port_variable,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+}
+
+type ControlSpec struct {
+	Mode         string `json:"mode,omitempty"`
+	StopCommand  string `json:"stop_command,omitempty"`
+	PortVariable string `json:"port_variable,omitempty"`
+	Password     string `json:"password,omitempty"`
 }
 
 type RuntimePackSpec struct {
@@ -57,6 +83,25 @@ type Request struct {
 	EntryFile      string
 	AppArgs        string
 	AppReady       string
+	ServerName     string
+	ServerPassword string
+	AdminPassword  string
+	MaxPlayers     int
+	GameMap        string
+	GameWorld      string
+	GameSeed       string
+	GameExtraArgs  string
+	SteamGSLT      string
+	QueryPort      int
+	SteamPort      int
+	ReliablePort   int
+	GamePort2      int
+	GamePort3      int
+	RCONPort       int
+	TelnetPort     int
+	WebMode        string
+	WebRoot        string
+	UpstreamURL    string
 }
 
 type Policy struct {
@@ -68,6 +113,7 @@ type Policy struct {
 	AllowedGitHosts map[string]bool
 	CacheLimitBytes int64
 	AllowSystemPath bool
+	ClearConsole    bool
 }
 
 type State struct {
@@ -134,12 +180,16 @@ type InstallContext struct {
 	PreparedSource string
 	Request        Request
 	Log            *Logger
+	HTTP           *HTTPClient
+	Out            io.Writer
+	Err            io.Writer
 }
 
 type Provider interface {
 	Spec() ProviderSpec
 	Resolve(context.Context, Request, *HTTPClient) (Resolved, error)
 	Install(context.Context, InstallContext, Resolved) (Resolved, error)
+	BuildProcess(context.Context, Config, State) (ProcessSpec, error)
 	CompareVersions(a, b string) int
 }
 
@@ -152,6 +202,8 @@ type ProcessSpec struct {
 	ReadyAfter    time.Duration
 	ReadyTimeout  time.Duration
 	StopTimeout   time.Duration
+	Readiness     ReadinessSpec
+	Control       ControlSpec
 }
 
 type Supervisor interface {

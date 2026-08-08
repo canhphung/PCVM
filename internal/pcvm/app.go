@@ -66,6 +66,9 @@ func (a *App) Run(ctx context.Context) error {
 	if !contains(spec.Architectures, a.Config.Arch) {
 		return fmt.Errorf("provider %q has no %s artifact", spec.ID, a.Config.Arch)
 	}
+	if err := ValidateProviderRequest(spec, a.Config); err != nil {
+		return err
+	}
 	if spec.RequiresEULA && !req.AcceptEULA {
 		return fmt.Errorf("set ACCEPT_MINECRAFT_EULA=1 to install %s", spec.Name)
 	}
@@ -109,9 +112,12 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	installed, err := provider.Install(ctx, installContext, prepared)
 	if err != nil {
-		if state != nil {
+		if state != nil && spec.Installer != "steamcmd" {
 			a.Log.Printf("WARNING: update failed; starting last-known-good: %v", err)
 			return a.runState(ctx, *state)
+		}
+		if state != nil && spec.Installer == "steamcmd" {
+			return fmt.Errorf("update %s failed; refusing to start the possibly partial in-place Steam installation: %w", provider.Spec().ID, err)
 		}
 		return fmt.Errorf("install %s: %w", provider.Spec().ID, err)
 	}
@@ -162,7 +168,7 @@ func (a *App) prepare(ctx context.Context, p Provider, req Request, resolved Res
 			return resolved, InstallContext{}, err
 		}
 	}
-	ic := InstallContext{Home: a.Config.Home, ControlDir: a.Config.Control, Artifact: artifactPath, Runtime: runtimePath, PreparedSource: preparedSource, Request: req, Log: a.Log}
+	ic := InstallContext{Home: a.Config.Home, ControlDir: a.Config.Control, Artifact: artifactPath, Runtime: runtimePath, PreparedSource: preparedSource, Request: req, Log: a.Log, HTTP: a.HTTP, Out: a.Out, Err: a.Err}
 	return resolved, ic, nil
 }
 
@@ -257,6 +263,10 @@ func (a *App) runState(ctx context.Context, state State) error {
 	if len(state.Command) == 0 {
 		return fmt.Errorf("state contains no command")
 	}
+	spec, ok := a.Catalog.Provider(state.Provider)
+	if !ok {
+		return fmt.Errorf("state references unknown provider %q", state.Provider)
+	}
 	allocationChanged, err := a.syncPrimaryAllocation(state)
 	if err != nil {
 		return err
@@ -265,10 +275,6 @@ func (a *App) runState(ctx context.Context, state State) error {
 		a.Log.Printf("configured primary allocation 0.0.0.0:%d for %s", a.Config.AllocationPort, state.Provider)
 	}
 	if _, err := compileReadyPatterns(state.ReadyPatterns); err != nil {
-		spec, ok := a.Catalog.Provider(state.Provider)
-		if !ok {
-			return fmt.Errorf("repair stored readiness metadata for unknown provider %q: %w", state.Provider, err)
-		}
 		if _, catalogErr := compileReadyPatterns(spec.ReadyPatterns); catalogErr != nil {
 			return fmt.Errorf("repair stored readiness metadata for provider %q: %w", state.Provider, catalogErr)
 		}
@@ -279,8 +285,21 @@ func (a *App) runState(ctx context.Context, state State) error {
 			return fmt.Errorf("save repaired state: %w", err)
 		}
 	}
-	environment := allocationEnvironment(state.Provider, state.Environment, a.Config.AllocationPort)
-	return a.Supervisor.Run(ctx, ProcessSpec{Command: state.Command, Directory: state.WorkingDirectory, Environment: environment, ReadyPatterns: state.ReadyPatterns, StopCommand: state.StopCommand, ReadyAfter: 5 * time.Second, ReadyTimeout: 2 * time.Minute, StopTimeout: 30 * time.Second}, a.In, a.Out, a.Err)
+	process, err := NewProvider(spec).BuildProcess(ctx, a.Config, state)
+	if err != nil {
+		return fmt.Errorf("build process for %s: %w", state.Provider, err)
+	}
+	process.Environment = allocationEnvironment(state.Provider, process.Environment, a.Config.AllocationPort)
+	if process.ReadyAfter == 0 {
+		process.ReadyAfter = 5 * time.Second
+	}
+	if process.ReadyTimeout == 0 {
+		process.ReadyTimeout = 2 * time.Minute
+	}
+	if process.StopTimeout == 0 {
+		process.StopTimeout = 30 * time.Second
+	}
+	return a.Supervisor.Run(ctx, process, a.In, a.Out, a.Err)
 }
 
 func first(values []string) string {

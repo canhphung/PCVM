@@ -1,62 +1,109 @@
 # PCVM
 
-PCVM is a single `PTDL_v2` Pterodactyl egg for selecting and running one of 14 server or application providers without modifying the Panel. A small Go launcher owns provider resolution, checksum-verified runtime downloads, state, guarded switches and process supervision.
+PCVM v1.2.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 32 providers without modifying Panel. Its Go launcher owns provider selection, checksum-verified runtimes, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
-Provider catalog:
+## Provider catalog
 
-| Group | Providers |
+| Menu | Providers |
 |---|---|
 | Minecraft Java | Vanilla, Paper, Purpur, Pufferfish, Fabric, Forge, NeoForge |
-| Proxies | Velocity, BungeeCord |
-| Bedrock | Bedrock Dedicated Server, PocketMine-MP |
-| Applications | Node.js bot, Python bot, Lavalink |
+| Minecraft Proxies | Velocity, BungeeCord |
+| Minecraft Bedrock | Bedrock Dedicated Server, PocketMine-MP |
+| Games — Source & FPS | Counter-Strike 2, Garry's Mod, Left 4 Dead 2 |
+| Games — Survival | Palworld, Rust, Rust + uMod, Project Zomboid, Valheim, Valheim + BepInEx, 7 Days to Die, Unturned |
+| Games — Sandbox & Automation | Terraria, tModLoader, Satisfactory, Factorio |
+| Web Servers | Nginx, Apache HTTP Server, Caddy |
+| Applications & Bots | Node.js bot, Python bot, Lavalink |
 
-Waterfall is intentionally excluded because upstream ended maintenance. Each Pterodactyl server runs exactly one provider at a time.
+All game providers are AMD64-only. Web, Minecraft and application providers remain available on ARM64 when the embedded runtime manifest has a compatible artifact. Waterfall is excluded because upstream ended maintenance. One server runs one provider at a time.
 
-## Install
+## Install on Pterodactyl
 
-1. Download the versioned egg JSON from [Releases](https://github.com/canhphung/PCVM/releases).
-2. In Pterodactyl 1.12.x, import it under an appropriate Nest.
-3. Keep the release-pinned `ghcr.io/canhphung/pcvm:<version>` image selected.
-4. Create a server, set `SOFTWARE`, version/build and EULA variables, then start it. With `SOFTWARE=interactive`, a first start displays the console menu.
+1. Download `egg-pcvm-1.2.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+2. Import it into a Nest on Pterodactyl 1.12.x.
+3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.2.0` image.
+4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
 
-The interactive console starts with a FIGlet PCVM banner and a two-level selector. Providers are grouped into Minecraft Java, Minecraft Proxies, Minecraft Bedrock, and Applications & Bots; categories disabled by host policy or unavailable on the current architecture are hidden.
-
-The launcher reads Pterodactyl's built-in `SERVER_PORT` on every start and applies the primary allocation to the active provider. Java servers and PocketMine update `server.properties`; Bedrock updates its game port; Velocity and BungeeCord update their first listener; Lavalink updates `server.port`. Node.js and Python apps receive `SERVER_PORT`, `PORT` and `HOST=0.0.0.0`. Only allocation-owned bind/port keys are changed, and the remaining user configuration is preserved. Secondary allocations remain application-specific in v1.
-
-The egg installation script only creates `/mnt/server/.pcvm`. Installation and later switching happen in the launcher, whose fixed startup command is:
+The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable startup command is:
 
 ```text
 /usr/local/bin/pcvm run
 ```
 
-Pterodactyl marks the server running only after `[PCVM] READY` appears.
+On first start, `SOFTWARE=interactive` opens a FIGlet menu with up to three levels. Host allowlists, architecture and runtime availability filter the choices. PCVM emits `[PCVM] READY` only after provider-specific regex, delay or TCP readiness succeeds.
+
+`pcvm run` clears the visible terminal screen and scrollback before its first banner. Set the admin-only `CLEAR_CONSOLE=0` while debugging. This does not delete Wings logs, audit history or server files; `pcvm version` and other non-run commands never clear the terminal.
+
+## Ports
+
+PCVM reads Pterodactyl's primary `SERVER_PORT`, binds public services to `0.0.0.0` and validates every required secondary port. It cannot allocate ports in Panel; an administrator must add the allocation and expose its value through the matching Egg variable.
+
+| Provider | Required secondary variable |
+|---|---|
+| Project Zomboid | `STEAM_PORT` |
+| Satisfactory | `RELIABLE_PORT` |
+| Valheim / Valheim + BepInEx | `QUERY_PORT=SERVER_PORT+1` |
+| 7 Days to Die | `GAME_PORT_2=SERVER_PORT+1`, `GAME_PORT_3=SERVER_PORT+2` |
+| Unturned | `QUERY_PORT=SERVER_PORT+1` |
+
+Palworld and Rust RCON plus 7 Days to Die Telnet bind to loopback and use `RCON_PORT` or `TELNET_PORT`; they are launcher control channels, not public allocations. Missing, out-of-range, duplicate or invalid-offset ports stop startup with an exact error.
+
+## Game installation and control
+
+Steam providers use the checksum-pinned AMD64 SteamCMD bootstrap, anonymous login and direct argv. PCVM stores the Steam build ID after `app_update ... validate`. Steam updates are in-place; if update or validation fails, state is not advanced and PCVM refuses to start the possibly partial installation.
+
+Rust uMod and Valheim BepInEx use official GitHub release assets with SHA-256 digests and are reapplied after game updates. Switching Rust ↔ Rust uMod or Valheim ↔ Valheim BepInEx preserves saves, configuration and plugin directories. Terraria ↔ tModLoader is intentionally incompatible.
+
+Console input is forwarded through stdin, Source RCON or Telnet according to provider metadata. Providers such as Valheim and Satisfactory only support signal-based stopping; console commands return a visible warning. Shutdown tries the provider's graceful path before SIGTERM and SIGKILL.
+
+`GAME_EXTRA_ARGS` is tokenized directly into argv and never passed through a shell. Managed ports, bind addresses, install paths and control credentials cannot be overridden. If `ADMIN_PASSWORD` is empty, PCVM creates a persistent random secret in `.pcvm/secrets` with mode `0600` and does not print it.
+
+## Web servers
+
+Nginx, Apache and Caddy run non-root on `0.0.0.0:${SERVER_PORT}`. `WEB_MODE=static` serves `WEB_ROOT` (default `public`). `WEB_MODE=proxy` requires an HTTP(S) `UPSTREAM_URL` without credentials and rejects link-local or metadata endpoints. PCVM canonicalizes the web root inside `/home/container`; symlink traversal and path escape are rejected. Caddy automatic HTTPS is disabled because public TLS remains the responsibility of the proxy in front of Pterodactyl.
+
+PCVM owns the generated main configuration. Persistent extension snippets live under `.pcvm/web/<provider>/conf.d` and are not overwritten. Nginx, Apache and Caddy share compatibility family `web-static`, so switching between them preserves `public/`.
 
 ## State and safe switching
 
-`.pcvm/state.json` records the selected and resolved versions, build, runtime, architecture, command, artifact SHA-256 and install time. Paper, Purpur and Pufferfish share the only in-place compatibility family. A downgrade or any incompatible family switch creates `.pcvm/pending-switch.json` and prints a 30-minute confirmation such as:
+`.pcvm/state.json` schema 2 records provider, requested/resolved version, Steam build or artifact build, runtime, architecture, verified artifact and install time. Schema 1 state migrates atomically on read. Commands containing runtime secrets are rebuilt from state, catalog and Startup Variables on every boot and are not stored.
+
+Paper, Purpur and Pufferfish share one compatibility family. Rust and Valheim variants share their respective families. A downgrade or incompatible family switch creates `.pcvm/pending-switch.json` and prints a 30-minute confirmation:
 
 ```text
 RESET_CONFIRM=DELETE:0123456789abcdef...
 ```
 
-Back up the server, paste the exact value and start again. The launcher prepares and verifies target downloads before deleting. Reset canonicalizes the server root, rejects a symlink root, never follows child symlinks and preserves only `.pcvm/cache`. Hosts can disable all user resets with `ALLOW_USER_RESET=0`.
-
-When upgrading from a pre-PCVM image, PCVM atomically migrates the legacy control directory into `.pcvm`, preserves state and cache, and rewrites stored absolute runtime and artifact paths before starting the existing provider.
+After the exact confirmation, the launcher resets only canonical `/home/container`, does not follow symlinks and preserves the runtime cache. Back up data first. Hosts can disable user resets with `ALLOW_USER_RESET=0`.
 
 ## Runtimes and downloads
 
-The core Debian image contains the launcher, Git, CA certificates, archive tools and native-module build tools. Java 8/11/17/21/25, Node.js 22/24, Python 3.11–3.14 and the PocketMine PHP pack are downloaded on demand. `runtime-manifest.json` is generated from official release metadata, embedded in the image and pins every URL to SHA-256. The current manifest has 23 architecture-specific packs; PocketMine's upstream PHP pack is AMD64-only, so it is hidden on ARM64.
+The Debian slim image contains Nginx, Apache, Git, CA certificates, archive/native build tools and common native game libraries. AMD64 additionally contains the i386 libraries required by SteamCMD and Source-family servers. Game binaries, Wine and Proton are not built into the image.
 
-Downloads require HTTPS, an allowlisted hostname, timeouts/retries and atomic renames. No `curl | bash`, `eval`, user-supplied install command or shell-composed application command is accepted. Bot Git mode permits only public credential-free HTTPS URLs on `GIT_ALLOWED_HOSTS`; upload mode runs the files already present in the server directory.
+`runtime-manifest.json` contains 27 architecture-specific, SHA-256-pinned packs:
+
+- Java 8, 11, 17, 21 and 25 on AMD64/ARM64.
+- Node.js 22 and 24 on AMD64/ARM64.
+- Python 3.11–3.14 on AMD64/ARM64.
+- PocketMine PHP on AMD64.
+- Caddy 2 on AMD64/ARM64.
+- .NET 8 and SteamCMD on AMD64.
+
+Downloads require HTTPS, an allowlisted hostname, timeout/retry, a temporary file, checksum verification and atomic rename. The launcher never uses `curl | bash`, `eval`, arbitrary install commands or shell-composed startup commands.
 
 ## Variables
 
-User variables are `SOFTWARE`, `SOFTWARE_VERSION`, `SOFTWARE_BUILD`, `RUNTIME_VERSION`, `AUTO_UPDATE`, `UPDATE_REQUEST`, `ACCEPT_MINECRAFT_EULA`, `RESET_CONFIRM`, `SOURCE_MODE`, `GIT_URL`, `GIT_BRANCH`, `ENTRY_FILE`, `APP_ARGS` and `APP_READY_PATTERN`.
+The release Egg defines the full public interface. Main groups are:
 
-Admin-only policy variables are `ALLOWED_SOFTWARE`, `ALLOW_USER_RESET`, `BRAND_NAME`, `SUPPORT_URL`, `RUNTIME_MIRROR_URL`, `GIT_ALLOWED_HOSTS` and `CACHE_LIMIT_MB`. Pterodactyl's view/edit flags are UI controls, not a secret store; do not put credentials in any egg variable.
+- Core: `SOFTWARE`, `SOFTWARE_VERSION`, `SOFTWARE_BUILD`, `RUNTIME_VERSION`, `AUTO_UPDATE`, `UPDATE_REQUEST`, `RESET_CONFIRM` and `ACCEPT_MINECRAFT_EULA`.
+- Games: `SERVER_NAME`, `SERVER_PASSWORD`, `ADMIN_PASSWORD`, `MAX_PLAYERS`, `GAME_MAP`, `GAME_WORLD`, `GAME_SEED`, `GAME_EXTRA_ARGS`, `STEAM_GSLT` and the port variables above.
+- Web: `WEB_MODE`, `WEB_ROOT`, `UPSTREAM_URL`.
+- Bots: `SOURCE_MODE`, `GIT_URL`, `GIT_BRANCH`, `ENTRY_FILE`, `APP_ARGS`, `APP_READY_PATTERN`.
+- Admin policy: `ALLOWED_SOFTWARE`, `ALLOW_USER_RESET`, `BRAND_NAME`, `SUPPORT_URL`, `RUNTIME_MIRROR_URL`, `GIT_ALLOWED_HOSTS`, `CACHE_LIMIT_MB`, `CLEAR_CONSOLE`.
 
-## Development
+Pterodactyl view/edit flags are UI policy, not a secret store. Bot Git mode permits public credential-free HTTPS repositories only; upload mode runs files already present in the server directory.
+
+## Development and release
 
 ```bash
 go test -race ./...
@@ -65,6 +112,6 @@ go run ./cmd/runtime-manifest -out runtime-manifest.json
 docker build -t pcvm:dev .
 ```
 
-Pull requests use only local HTTP fixtures for provider contracts. The scheduled workflow resolves real upstream APIs and regenerates the runtime lock to detect schema or asset changes. CI tests, vets, cross-compiles AMD64/ARM64 and builds a multi-architecture image with SBOM and provenance. Tags matching `v*.*.*` publish a release-pinned egg, image, checksums and a keyless Cosign signature.
+Pull requests use local HTTP fixtures, a SteamCMD shim and fake control servers. CI cross-compiles AMD64/ARM64, tests web static/proxy modes on both architectures and builds the multi-architecture image with SBOM and provenance. Nightly checks live resolvers, runtime metadata and Steam App IDs without downloading full games. The manual `full-game-smoke` workflow installs one selected real game per run.
 
-The project is MIT licensed and contains no telemetry.
+Tags matching `v*.*.*` publish a version-pinned Egg and image, checksums, provenance and a keyless Cosign signature.

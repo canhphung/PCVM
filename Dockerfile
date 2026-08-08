@@ -10,11 +10,19 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -o /out/pcvm ./cmd/pcvm
 
 FROM debian:bookworm-slim
+ARG TARGETARCH
 LABEL org.opencontainers.image.source="https://github.com/canhphung/PCVM" \
       org.opencontainers.image.description="PCVM launcher for Pterodactyl" \
       org.opencontainers.image.licenses="MIT"
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git unzip xz-utils zstd build-essential tini libcurl4 libssl3 \
+RUN if [ "$TARGETARCH" = "amd64" ]; then dpkg --add-architecture i386; fi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+       apache2 build-essential ca-certificates git libatomic1 libcurl4 libicu72 libpulse0 libsqlite3-0 libssl3 libunwind8 \
+       nginx-light tini unzip xz-utils zstd \
+    && if [ "$TARGETARCH" = "amd64" ]; then \
+         apt-get install -y --no-install-recommends libc6:i386 lib32gcc-s1 lib32stdc++6; \
+       fi \
+    && a2enmod proxy proxy_http headers \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --home-dir /home/container --uid 1000 --shell /bin/bash container
 COPY --from=build /out/pcvm /usr/local/bin/pcvm

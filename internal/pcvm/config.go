@@ -37,7 +37,7 @@ func ConfigFromEnv() (Config, error) {
 		}
 		limit = parsed
 	}
-	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,fabric,forge,neoforge,velocity,bungeecord,bedrock,pocketmine,node-bot,python-bot,lavalink"))
+	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,fabric,forge,neoforge,velocity,bungeecord,bedrock,pocketmine,cs2,gmod,l4d2,palworld,rust,rust-umod,project-zomboid,valheim,valheim-bepinex,7dtd,unturned,terraria,tmodloader,satisfactory,factorio,nginx,apache,caddy,node-bot,python-bot,lavalink"))
 	gitHosts := csvSet(envDefault("GIT_ALLOWED_HOSTS", "github.com,gitlab.com,codeberg.org"))
 	request := Request{
 		Software: envDefault("SOFTWARE", "interactive"), Version: envDefault("SOFTWARE_VERSION", "latest"),
@@ -47,6 +47,14 @@ func ConfigFromEnv() (Config, error) {
 		SourceMode: envDefault("SOURCE_MODE", "upload"), GitURL: os.Getenv("GIT_URL"),
 		GitBranch: envDefault("GIT_BRANCH", "main"), EntryFile: os.Getenv("ENTRY_FILE"),
 		AppArgs: os.Getenv("APP_ARGS"), AppReady: os.Getenv("APP_READY_PATTERN"),
+		ServerName: envDefault("SERVER_NAME", "PCVM Server"), ServerPassword: os.Getenv("SERVER_PASSWORD"),
+		AdminPassword: os.Getenv("ADMIN_PASSWORD"), MaxPlayers: envInt("MAX_PLAYERS", 16),
+		GameMap: os.Getenv("GAME_MAP"), GameWorld: envDefault("GAME_WORLD", "Dedicated"),
+		GameSeed: os.Getenv("GAME_SEED"), GameExtraArgs: os.Getenv("GAME_EXTRA_ARGS"), SteamGSLT: os.Getenv("STEAM_GSLT"),
+		QueryPort: envPort("QUERY_PORT"), SteamPort: envPort("STEAM_PORT"), ReliablePort: envPort("RELIABLE_PORT"),
+		GamePort2: envPort("GAME_PORT_2"), GamePort3: envPort("GAME_PORT_3"), RCONPort: envPortDefault("RCON_PORT", 25575),
+		TelnetPort: envPortDefault("TELNET_PORT", 8081), WebMode: envDefault("WEB_MODE", "static"),
+		WebRoot: envDefault("WEB_ROOT", "public"), UpstreamURL: os.Getenv("UPSTREAM_URL"),
 	}
 	brandName := envDefault("BRAND_NAME", "PCVM")
 	if strings.EqualFold(strings.ReplaceAll(brandName, " ", ""), "smartmultiegg") {
@@ -55,7 +63,8 @@ func ConfigFromEnv() (Config, error) {
 	policy := Policy{AllowedSoftware: allowed, AllowUserReset: envBool("ALLOW_USER_RESET", true),
 		BrandName: brandName, SupportURL: os.Getenv("SUPPORT_URL"),
 		RuntimeMirror: os.Getenv("RUNTIME_MIRROR_URL"), AllowedGitHosts: gitHosts,
-		CacheLimitBytes: limit * 1024 * 1024, AllowSystemPath: envBool("PCVM_ALLOW_SYSTEM_RUNTIME", false)}
+		CacheLimitBytes: limit * 1024 * 1024, AllowSystemPath: envBool("PCVM_ALLOW_SYSTEM_RUNTIME", false),
+		ClearConsole: envBool("CLEAR_CONSOLE", true)}
 	if policy.RuntimeMirror != "" {
 		u, err := url.Parse(policy.RuntimeMirror)
 		if err != nil || u.Scheme != "https" || u.Host == "" {
@@ -89,6 +98,32 @@ func envBool(key string, fallback bool) bool {
 	}
 	b, err := strconv.ParseBool(v)
 	return err == nil && b
+}
+
+func envInt(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return -1
+	}
+	return value
+}
+
+func envPort(key string) int { return envPortDefault(key, 0) }
+
+func envPortDefault(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > 65535 {
+		return -1
+	}
+	return value
 }
 func csvSet(raw string) map[string]bool {
 	out := map[string]bool{}

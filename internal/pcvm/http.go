@@ -24,7 +24,7 @@ type HTTPClient struct {
 }
 
 func NewHTTPClient() *HTTPClient {
-	hosts := csvSet("launchermeta.mojang.com,piston-meta.mojang.com,piston-data.mojang.com,fill.papermc.io,fill-data.papermc.io,api.purpurmc.org,ci.pufferfish.host,meta.fabricmc.net,maven.minecraftforge.net,maven.neoforged.net,ci.md-5.net,hub.spigotmc.org,net-secondary.web.minecraft-services.net,www.minecraft.net,minecraft.net,minecraft.azureedge.net,api.github.com,github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,nodejs.org,python.org,www.python.org,download.oracle.com,api.adoptium.net")
+	hosts := csvSet("launchermeta.mojang.com,piston-meta.mojang.com,piston-data.mojang.com,fill.papermc.io,fill-data.papermc.io,api.purpurmc.org,ci.pufferfish.host,meta.fabricmc.net,maven.minecraftforge.net,maven.neoforged.net,ci.md-5.net,hub.spigotmc.org,net-secondary.web.minecraft-services.net,www.minecraft.net,minecraft.net,minecraft.azureedge.net,api.github.com,github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,nodejs.org,python.org,www.python.org,download.oracle.com,api.adoptium.net,terraria.org,www.terraria.org,factorio.com,www.factorio.com,dl.factorio.com,steamcdn-a.akamaihd.net,github-releases.githubusercontent.com,builds.dotnet.microsoft.com")
 	h := &HTTPClient{AllowedHosts: hosts, Retries: 3}
 	h.Client = &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(req *http.Request, _ []*http.Request) error { return h.validate(req.URL.String()) }}
 	return h

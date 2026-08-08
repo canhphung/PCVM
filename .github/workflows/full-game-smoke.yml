@@ -1,0 +1,71 @@
+name: Full game smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Download and fresh-install one real game provider
+        required: true
+        type: choice
+        options:
+          - cs2
+          - palworld
+          - rust
+          - rust-umod
+          - terraria
+          - project-zomboid
+          - satisfactory
+          - valheim
+          - valheim-bepinex
+          - factorio
+          - 7dtd
+          - gmod
+          - l4d2
+          - unturned
+          - tmodloader
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build AMD64 image
+        run: docker build --build-arg VERSION=1.2.0 -t pcvm:full-game-smoke .
+      - name: Install, reach readiness and stop safely
+        env:
+          PROVIDER: ${{ inputs.provider }}
+        run: |
+          set -euo pipefail
+          data=$(mktemp -d)
+          cleanup() {
+            docker rm -f pcvm-full-game >/dev/null 2>&1 || true
+            rm -rf "$data"
+          }
+          trap cleanup EXIT
+          chmod 0777 "$data"
+          docker run -d --name pcvm-full-game \
+            -v "$data:/home/container" \
+            -e "SOFTWARE=${PROVIDER}" -e SOFTWARE_VERSION=latest -e SOFTWARE_BUILD=latest \
+            -e SERVER_PORT=27015 -e QUERY_PORT=27016 -e STEAM_PORT=27018 -e RELIABLE_PORT=27019 \
+            -e GAME_PORT_2=27016 -e GAME_PORT_3=27017 -e RCON_PORT=29015 -e TELNET_PORT=29016 \
+            -e MAX_PLAYERS=4 -e SERVER_NAME='PCVM CI' -e SERVER_PASSWORD=pcvmtest \
+            -e ACCEPT_MINECRAFT_EULA=1 -e CLEAR_CONSOLE=0 pcvm:full-game-smoke
+          ready=0
+          for _ in $(seq 1 7200); do
+            if docker logs pcvm-full-game 2>&1 | grep -Fq '[PCVM] READY'; then
+              ready=1
+              break
+            fi
+            if ! docker inspect -f '{{.State.Running}}' pcvm-full-game | grep -q true; then
+              docker logs pcvm-full-game
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker stop --time 45 pcvm-full-game

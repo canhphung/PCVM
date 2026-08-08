@@ -1,5 +1,32 @@
 [
   {
+    "kind": "caddy",
+    "version": "2",
+    "architecture": "amd64",
+    "url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz",
+    "sha256": "527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9",
+    "executable": "caddy",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "caddy",
+    "version": "2",
+    "architecture": "arm64",
+    "url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_arm64.tar.gz",
+    "sha256": "52d42ae12b3462097e9868da6dfed3c9648ae12edd3b3638102312af84cb6904",
+    "executable": "caddy",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "dotnet",
+    "version": "8",
+    "architecture": "amd64",
+    "url": "https://builds.dotnet.microsoft.com/dotnet/Runtime/8.0.29/dotnet-runtime-8.0.29-linux-x64.tar.gz",
+    "sha256": "dba346c5c4357e1befebf14de8c8ee7f09313cc12c7c0015a4cdd4dfd0efba81",
+    "executable": "dotnet",
+    "archive": "tar.gz"
+  },
+  {
     "kind": "java",
     "version": "11",
     "architecture": "amd64",
@@ -204,6 +231,15 @@
     "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.14.7%2B20260807-aarch64-unknown-linux-gnu-install_only.tar.gz",
     "sha256": "3657f14592d0a9c3f459ded52bf6f38976698cb07365e4025684bb11dd6be1cb",
     "executable": "python/bin/python3",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "steamcmd",
+    "version": "1",
+    "architecture": "amd64",
+    "url": "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz",
+    "sha256": "cebf0046bfd08cf45da6bc094ae47aa39ebf4155e5ede41373b579b8f1071e7c",
+    "executable": "steamcmd.sh",
     "archive": "tar.gz"
   }
 ]
