@@ -10,15 +10,22 @@ func TestEmbeddedCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Providers) != 32 {
-		t.Fatalf("providers=%d, want 32", len(c.Providers))
+	if len(c.Providers) != 35 {
+		t.Fatalf("providers=%d, want 35", len(c.Providers))
 	}
 	if _, ok := c.Provider("waterfall"); ok {
 		t.Fatal("Waterfall must not be shipped")
 	}
+	if _, ok := c.Provider("levilamina"); ok {
+		t.Fatal("Windows-only LeviLamina must not be offered by the Linux launcher")
+	}
 	available := c.Available("arm64", map[string]bool{"paper": true, "bedrock": true})
 	if len(available) != 1 || available[0].ID != "paper" {
 		t.Fatalf("unexpected ARM64 list: %#v", available)
+	}
+	bedrockARM := c.Available("arm64", map[string]bool{"powernukkitx": true, "cloudburst-nukkit": true, "endstone": true})
+	if len(bedrockARM) != 2 || bedrockARM[0].ID != "cloudburst-nukkit" || bedrockARM[1].ID != "powernukkitx" {
+		t.Fatalf("unexpected Bedrock ARM64 list: %#v", bedrockARM)
 	}
 	vanilla, ok := c.Provider("vanilla")
 	if !ok || len(vanilla.ReadyPatterns) == 0 {

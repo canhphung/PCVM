@@ -25,7 +25,7 @@ type menuCategory struct {
 var menuCategories = map[string]menuCategory{
 	"java":     {ID: "java", Name: "Minecraft Java", Description: "Vanilla, optimized servers and mod loaders"},
 	"proxy":    {ID: "proxy", Name: "Minecraft Proxies", Description: "Route players between backend servers"},
-	"bedrock":  {ID: "bedrock", Name: "Minecraft Bedrock", Description: "Official Bedrock and PocketMine-MP"},
+	"bedrock":  {ID: "bedrock", Name: "Minecraft Bedrock", Description: "Official BDS, Nukkit-family and plugin platforms"},
 	"games":    {ID: "games", Name: "Game Servers", Description: "Native Linux dedicated game servers"},
 	"source":   {ID: "source", Name: "Source & FPS", Description: "Counter-Strike, Garry's Mod and Left 4 Dead"},
 	"survival": {ID: "survival", Name: "Survival", Description: "Persistent survival and co-op worlds"},

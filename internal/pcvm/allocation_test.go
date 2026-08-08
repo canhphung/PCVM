@@ -106,7 +106,7 @@ func TestBungeeAllocationOnlyChangesFirstListener(t *testing.T) {
 	}
 }
 
-func TestBedrockPocketMineAndLavalinkAllocation(t *testing.T) {
+func TestBedrockProvidersAndLavalinkAllocation(t *testing.T) {
 	tests := []struct {
 		provider string
 		initial  string
@@ -115,6 +115,9 @@ func TestBedrockPocketMineAndLavalinkAllocation(t *testing.T) {
 	}{
 		{provider: "bedrock", file: "server.properties", initial: "server-port=19132\nserver-portv6=19133\n", want: []string{"server-port=30126", "server-portv6=19133"}},
 		{provider: "pocketmine", file: "server.properties", initial: "motd=custom\n", want: []string{"motd=custom", "server-ip=0.0.0.0", "server-port=30126", "query.port=30126"}},
+		{provider: "powernukkitx", file: "server.properties", initial: "motd=custom\n", want: []string{"motd=custom", "server-ip=0.0.0.0", "server-port=30126", "query.port=30126"}},
+		{provider: "cloudburst-nukkit", file: "server.properties", initial: "motd=custom\n", want: []string{"motd=custom", "server-ip=0.0.0.0", "server-port=30126", "query.port=30126"}},
+		{provider: "endstone", file: "server.properties", initial: "server-port=19132\nserver-portv6=19133\n", want: []string{"server-port=30126", "server-portv6=30126"}},
 		{provider: "lavalink", file: "application.yml", initial: "server:\n  port: 2333\nlavalink:\n  server:\n    password: custom\n", want: []string{"port: 30126", "password: custom"}},
 	}
 	for _, test := range tests {
@@ -144,6 +147,32 @@ func TestBotReceivesCommonAllocationEnvironment(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in %v", want, environment)
 		}
+	}
+}
+
+func TestTerrariaReceivesWritableUserEnvironment(t *testing.T) {
+	home := t.TempDir()
+	environment, err := processUserEnvironment("terraria", home, []string{"HOME=/", "CUSTOM=yes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(environment, "\n")
+	for _, want := range []string{
+		"HOME=" + home,
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+		"CUSTOM=yes",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in %v", want, environment)
+		}
+	}
+	if strings.Contains(joined, "HOME=/\n") {
+		t.Fatalf("stale root HOME in %v", environment)
+	}
+	if info, err := os.Stat(filepath.Join(home, ".local", "share", "Terraria")); err != nil || !info.IsDir() {
+		t.Fatalf("Terraria data directory was not created: info=%v err=%v", info, err)
 	}
 }
 

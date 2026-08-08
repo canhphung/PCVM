@@ -175,6 +175,7 @@ type Resolved struct {
 type InstallContext struct {
 	Home           string
 	ControlDir     string
+	AllocationPort int
 	Artifact       string
 	Runtime        string
 	PreparedSource string

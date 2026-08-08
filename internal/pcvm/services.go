@@ -830,11 +830,11 @@ func apacheConfig(managed, extensions, root, port, mode, upstream string) string
 }
 
 func caddyConfig(extensions, root, port, mode, upstream string) string {
-	body := fmt.Sprintf("root * %s\n    file_server", root)
+	body := fmt.Sprintf("\troot * %s\n\tfile_server", filepath.ToSlash(root))
 	if mode == "proxy" {
-		body = "reverse_proxy " + upstream
+		body = "\treverse_proxy " + upstream
 	}
-	return fmt.Sprintf("{\n    auto_https off\n    admin off\n}\nhttp://0.0.0.0:%s {\n    %s\n    import %s/*.caddy\n}\n", port, body, filepath.ToSlash(extensions))
+	return fmt.Sprintf("{\n\tadmin off\n\tauto_https off\n\tpersist_config off\n\tservers {\n\t\tprotocols h1\n\t}\n}\n\n:%s {\n\tbind 0.0.0.0\n%s\n\timport %s/*.caddy\n}\n", port, body, filepath.ToSlash(extensions))
 }
 
 func writeAtomicFile(path string, data []byte, mode os.FileMode) error {

@@ -41,7 +41,9 @@ func (a *App) syncPrimaryAllocation(state State) (bool, error) {
 		}
 	case "bedrock":
 		changed, err = patchProperties(a.Config.Home, "server.properties", []configSetting{{Key: "server-port", Value: value}})
-	case "pocketmine":
+	case "endstone":
+		changed, err = patchProperties(a.Config.Home, "server.properties", []configSetting{{Key: "server-port", Value: value}, {Key: "server-portv6", Value: value}})
+	case "pocketmine", "powernukkitx", "cloudburst-nukkit":
 		changed, err = patchProperties(a.Config.Home, "server.properties", []configSetting{
 			{Key: "server-ip", Value: "0.0.0.0"},
 			{Key: "server-port", Value: value},
@@ -65,6 +67,31 @@ func allocationEnvironment(provider string, current []string, port int) []string
 	out = upsertEnvironment(out, "PORT", strconv.Itoa(port))
 	out = upsertEnvironment(out, "HOST", "0.0.0.0")
 	return out
+}
+
+// processUserEnvironment keeps software data inside the mounted Pterodactyl
+// server directory. Wings installations can start the container with HOME=/,
+// which makes Mono-based servers such as Terraria try to write to /.local.
+func processUserEnvironment(provider, home string, current []string) ([]string, error) {
+	dataHome := filepath.Join(home, ".local", "share")
+	configHome := filepath.Join(home, ".config")
+	cacheHome := filepath.Join(home, ".cache")
+	directories := []string{dataHome, configHome, cacheHome}
+	if provider == "terraria" || provider == "tmodloader" {
+		directories = append(directories, filepath.Join(dataHome, "Terraria"))
+	}
+	for _, directory := range directories {
+		if err := os.MkdirAll(directory, 0o750); err != nil {
+			return nil, fmt.Errorf("create process user directory %s: %w", directory, err)
+		}
+	}
+
+	out := append([]string(nil), current...)
+	out = upsertEnvironment(out, "HOME", home)
+	out = upsertEnvironment(out, "XDG_DATA_HOME", dataHome)
+	out = upsertEnvironment(out, "XDG_CONFIG_HOME", configHome)
+	out = upsertEnvironment(out, "XDG_CACHE_HOME", cacheHome)
+	return out, nil
 }
 
 func upsertEnvironment(environment []string, key, value string) []string {
