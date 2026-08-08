@@ -18,6 +18,18 @@ import (
 
 type ProcessSupervisor struct{ Log *Logger }
 
+func compileReadyPatterns(rawPatterns []string) ([]*regexp.Regexp, error) {
+	patterns := make([]*regexp.Regexp, 0, len(rawPatterns))
+	for _, raw := range rawPatterns {
+		re, err := regexp.Compile(raw)
+		if err != nil {
+			return nil, fmt.Errorf("ready pattern %q: %w", raw, err)
+		}
+		patterns = append(patterns, re)
+	}
+	return patterns, nil
+}
+
 func (s ProcessSupervisor) Run(ctx context.Context, spec ProcessSpec, input io.Reader, stdout, stderr io.Writer) error {
 	if len(spec.Command) == 0 {
 		return fmt.Errorf("empty process command")
@@ -27,6 +39,10 @@ func (s ProcessSupervisor) Run(ctx context.Context, spec ProcessSpec, input io.R
 	}
 	if spec.ReadyAfter == 0 {
 		spec.ReadyAfter = 5 * time.Second
+	}
+	patterns, err := compileReadyPatterns(spec.ReadyPatterns)
+	if err != nil {
+		return err
 	}
 	cmd := exec.Command(spec.Command[0], spec.Command[1:]...)
 	cmd.Dir = spec.Directory
@@ -51,15 +67,6 @@ func (s ProcessSupervisor) Run(ctx context.Context, spec ProcessSpec, input io.R
 	ready := make(chan struct{}, 1)
 	var readyOnce sync.Once
 	markReady := func() { readyOnce.Do(func() { fmt.Fprintln(stdout, "[MULTIEGG] READY"); ready <- struct{}{} }) }
-	patterns := make([]*regexp.Regexp, 0, len(spec.ReadyPatterns))
-	for _, raw := range spec.ReadyPatterns {
-		re, e := regexp.Compile(raw)
-		if e != nil {
-			_ = cmd.Process.Kill()
-			return fmt.Errorf("ready pattern %q: %w", raw, e)
-		}
-		patterns = append(patterns, re)
-	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	pump := func(src io.Reader, dst io.Writer) {

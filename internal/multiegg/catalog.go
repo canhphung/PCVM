@@ -51,6 +51,9 @@ func (c Catalog) Validate() error {
 		if len(p.Architectures) == 0 {
 			return fmt.Errorf("provider %q has no architectures", p.ID)
 		}
+		if _, err := compileReadyPatterns(p.ReadyPatterns); err != nil {
+			return fmt.Errorf("provider %q has invalid readiness metadata: %w", p.ID, err)
+		}
 	}
 	for _, pack := range c.RuntimePacks {
 		if pack.Kind == "" || pack.Version == "" || pack.Architecture == "" {
