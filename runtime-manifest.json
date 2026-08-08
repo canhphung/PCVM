@@ -1,0 +1,209 @@
+[
+  {
+    "kind": "java",
+    "version": "11",
+    "architecture": "amd64",
+    "url": "https://github.com/adoptium/temurin11-binaries/releases/download/jdk-11.0.32%2B9/OpenJDK11U-jre_x64_linux_hotspot_11.0.32_9.tar.gz",
+    "sha256": "87ab4bf8dec10775d986957bc313816678f9227f1d033d7d6e6a1d00dace5b95",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "java",
+    "version": "11",
+    "architecture": "arm64",
+    "url": "https://github.com/adoptium/temurin11-binaries/releases/download/jdk-11.0.32%2B9/OpenJDK11U-jre_aarch64_linux_hotspot_11.0.32_9.tar.gz",
+    "sha256": "c65c7aada375e3f913ff7a9a8ce00a280b1de10a2ac1321789ac5909508cae76",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "java",
+    "version": "17",
+    "architecture": "amd64",
+    "url": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jre_x64_linux_hotspot_17.0.20_8.tar.gz",
+    "sha256": "ef491a51a46ef90cc47fbc4abb219fde32483ff91be5ec66ddc896df43524b27",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "java",
+    "version": "17",
+    "architecture": "arm64",
+    "url": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jre_aarch64_linux_hotspot_17.0.20_8.tar.gz",
+    "sha256": "9d14a95e07c44bc48666625162baf40db9da4dcb192bfc3e43047790693061a2",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "java",
+    "version": "21",
+    "architecture": "amd64",
+    "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12%2B8/OpenJDK21U-jre_x64_linux_hotspot_21.0.12_8.tar.gz",
+    "sha256": "8a379a67c91a3ae61ffb33d46e0a40c7ba35e70713c4db31cfca30492f792eff",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "java",
+    "version": "21",
+    "architecture": "arm64",
+    "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12%2B8/OpenJDK21U-jre_aarch64_linux_hotspot_21.0.12_8.tar.gz",
+    "sha256": "5f9c96b656827b9d14ebeda7739e25be554fa6d25669b03847c1df6e869c0679",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "java",
+    "version": "25",
+    "architecture": "amd64",
+    "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jre_x64_linux_hotspot_25.0.4_7.tar.gz",
+    "sha256": "aed3915f8facc0c80733ab2448bb0df4b494a36a2c5759e9a6e1eb979720f2b3",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "java",
+    "version": "25",
+    "architecture": "arm64",
+    "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jre_aarch64_linux_hotspot_25.0.4_7.tar.gz",
+    "sha256": "1f2644427000316bc431df3389504551ed7464fe8486bf6b4f1130af9ffc8f55",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "java",
+    "version": "8",
+    "architecture": "amd64",
+    "url": "https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u502-b07/OpenJDK8U-jre_x64_linux_hotspot_8u502b07.tar.gz",
+    "sha256": "f1a7bea0804bfa5627dac412fe7a0d751c4228592e356d6a32a30da54a48ed7a",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "java",
+    "version": "8",
+    "architecture": "arm64",
+    "url": "https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u502-b07/OpenJDK8U-jre_aarch64_linux_hotspot_8u502b07.tar.gz",
+    "sha256": "4ffd3abaf65a47610096d9c25ea06f2439428f1c087d3e54eb518553a6115638",
+    "executable": "*/bin/java",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "node",
+    "version": "22",
+    "architecture": "amd64",
+    "url": "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.gz",
+    "sha256": "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
+    "executable": "*/bin/node",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "node",
+    "version": "22",
+    "architecture": "arm64",
+    "url": "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-arm64.tar.gz",
+    "sha256": "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
+    "executable": "*/bin/node",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "node",
+    "version": "24",
+    "architecture": "amd64",
+    "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-x64.tar.gz",
+    "sha256": "f625d97cd707df4ff96254916fbc5ff014f09c09effe5a1e0ca8f6d41a8789d4",
+    "executable": "*/bin/node",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "node",
+    "version": "24",
+    "architecture": "arm64",
+    "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-arm64.tar.gz",
+    "sha256": "d28c8a5bf0a808f0ed434a1dce8c54ae98f0371c0bd86ac58abc613f73e6643f",
+    "executable": "*/bin/node",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "php-pmmp",
+    "version": "pmmp",
+    "architecture": "amd64",
+    "url": "https://github.com/pmmp/PHP-Binaries/releases/download/pm5-php-8.4-latest/PHP-8.4-Linux-x86_64-PM5.tar.gz",
+    "sha256": "5b9a1a8f103f7b91670336495b531d9a75c05cca3bd544251a7b63d2124bcc6c",
+    "executable": "bin/php7/bin/php",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "python",
+    "version": "3.11",
+    "architecture": "amd64",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.11.15%2B20260807-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "b9fff092374acebc451bb881156afe6a58991213d25386358742fee296128909",
+    "executable": "python/bin/python3",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "python",
+    "version": "3.11",
+    "architecture": "arm64",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.11.15%2B20260807-aarch64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "8c66cfe06264399eac4d271a7adc078b6c2adac7405a83f42b8276596466a3ad",
+    "executable": "python/bin/python3",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "python",
+    "version": "3.12",
+    "architecture": "amd64",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.12.13%2B20260807-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "5bd6f36fd7ef02b909234c94dca9994ef0da06ace3bc3cece4fe27870e9cdbbe",
+    "executable": "python/bin/python3",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "python",
+    "version": "3.12",
+    "architecture": "arm64",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.12.13%2B20260807-aarch64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "e2a33a26bae0f0975a9786c2e3beaee9cfeb35f856bdd273ff10ae35cf7e06ce",
+    "executable": "python/bin/python3",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "python",
+    "version": "3.13",
+    "architecture": "amd64",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.13.15%2B20260807-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "7253808c3413d9ebd03e76b3853c895b9287f12e0750a30fce1cbf430e516113",
+    "executable": "python/bin/python3",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "python",
+    "version": "3.13",
+    "architecture": "arm64",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.13.15%2B20260807-aarch64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "68159637492dcf3501c0967b69e07665c3dda070fb42231737055f72963f66fc",
+    "executable": "python/bin/python3",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "python",
+    "version": "3.14",
+    "architecture": "amd64",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.14.7%2B20260807-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "3d1705fee7747c491d774e26fa91fad67e25d1eb3ede4124dc88501279f2e7d4",
+    "executable": "python/bin/python3",
+    "archive": "tar.gz"
+  },
+  {
+    "kind": "python",
+    "version": "3.14",
+    "architecture": "arm64",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.14.7%2B20260807-aarch64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "3657f14592d0a9c3f459ded52bf6f38976698cb07365e4025684bb11dd6be1cb",
+    "executable": "python/bin/python3",
+    "archive": "tar.gz"
+  }
+]

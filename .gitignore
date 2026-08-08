@@ -1,0 +1,7 @@
+/bin/
+/dist/
+/.cache/
+/.multiegg/
+*.exe
+*.test
+
