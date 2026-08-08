@@ -1,3 +1,3 @@
-module github.com/canhphung/smart-multiegg
+module github.com/canhphung/PCVM
 
 go 1.24

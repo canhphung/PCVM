@@ -1,6 +1,6 @@
-# Smart MultiEgg
+# PCVM
 
-Smart MultiEgg is a single `PTDL_v2` Pterodactyl egg for selecting and running one of 14 server or application providers without modifying the Panel. A small Go launcher owns provider resolution, checksum-verified runtime downloads, state, guarded switches and process supervision.
+PCVM is a single `PTDL_v2` Pterodactyl egg for selecting and running one of 14 server or application providers without modifying the Panel. A small Go launcher owns provider resolution, checksum-verified runtime downloads, state, guarded switches and process supervision.
 
 Provider catalog:
 
@@ -15,30 +15,34 @@ Waterfall is intentionally excluded because upstream ended maintenance. Each Pte
 
 ## Install
 
-1. Download the versioned egg JSON from [Releases](https://github.com/canhphung/smart-multiegg/releases).
+1. Download the versioned egg JSON from [Releases](https://github.com/canhphung/PCVM/releases).
 2. In Pterodactyl 1.12.x, import it under an appropriate Nest.
-3. Keep the release-pinned `ghcr.io/canhphung/smart-multiegg:<version>` image selected.
+3. Keep the release-pinned `ghcr.io/canhphung/pcvm:<version>` image selected.
 4. Create a server, set `SOFTWARE`, version/build and EULA variables, then start it. With `SOFTWARE=interactive`, a first start displays the console menu.
+
+The interactive console starts with a FIGlet PCVM banner and a two-level selector. Providers are grouped into Minecraft Java, Minecraft Proxies, Minecraft Bedrock, and Applications & Bots; categories disabled by host policy or unavailable on the current architecture are hidden.
 
 The launcher reads Pterodactyl's built-in `SERVER_PORT` on every start and applies the primary allocation to the active provider. Java servers and PocketMine update `server.properties`; Bedrock updates its game port; Velocity and BungeeCord update their first listener; Lavalink updates `server.port`. Node.js and Python apps receive `SERVER_PORT`, `PORT` and `HOST=0.0.0.0`. Only allocation-owned bind/port keys are changed, and the remaining user configuration is preserved. Secondary allocations remain application-specific in v1.
 
-The egg installation script only creates `/mnt/server/.multiegg`. Installation and later switching happen in the launcher, whose fixed startup command is:
+The egg installation script only creates `/mnt/server/.pcvm`. Installation and later switching happen in the launcher, whose fixed startup command is:
 
 ```text
-/usr/local/bin/multiegg run
+/usr/local/bin/pcvm run
 ```
 
-Pterodactyl marks the server running only after `[MULTIEGG] READY` appears.
+Pterodactyl marks the server running only after `[PCVM] READY` appears.
 
 ## State and safe switching
 
-`.multiegg/state.json` records the selected and resolved versions, build, runtime, architecture, command, artifact SHA-256 and install time. Paper, Purpur and Pufferfish share the only in-place compatibility family. A downgrade or any incompatible family switch creates `.multiegg/pending-switch.json` and prints a 30-minute confirmation such as:
+`.pcvm/state.json` records the selected and resolved versions, build, runtime, architecture, command, artifact SHA-256 and install time. Paper, Purpur and Pufferfish share the only in-place compatibility family. A downgrade or any incompatible family switch creates `.pcvm/pending-switch.json` and prints a 30-minute confirmation such as:
 
 ```text
 RESET_CONFIRM=DELETE:0123456789abcdef...
 ```
 
-Back up the server, paste the exact value and start again. The launcher prepares and verifies target downloads before deleting. Reset canonicalizes the server root, rejects a symlink root, never follows child symlinks and preserves only `.multiegg/cache`. Hosts can disable all user resets with `ALLOW_USER_RESET=0`.
+Back up the server, paste the exact value and start again. The launcher prepares and verifies target downloads before deleting. Reset canonicalizes the server root, rejects a symlink root, never follows child symlinks and preserves only `.pcvm/cache`. Hosts can disable all user resets with `ALLOW_USER_RESET=0`.
+
+When upgrading from a pre-PCVM image, PCVM atomically migrates the legacy control directory into `.pcvm`, preserves state and cache, and rewrites stored absolute runtime and artifact paths before starting the existing provider.
 
 ## Runtimes and downloads
 
@@ -58,7 +62,7 @@ Admin-only policy variables are `ALLOWED_SOFTWARE`, `ALLOW_USER_RESET`, `BRAND_N
 go test -race ./...
 go vet ./...
 go run ./cmd/runtime-manifest -out runtime-manifest.json
-docker build -t smart-multiegg:dev .
+docker build -t pcvm:dev .
 ```
 
 Pull requests use only local HTTP fixtures for provider contracts. The scheduled workflow resolves real upstream APIs and regenerates the runtime lock to detect schema or asset changes. CI tests, vets, cross-compiles AMD64/ARM64 and builds a multi-architecture image with SBOM and provenance. Tags matching `v*.*.*` publish a release-pinned egg, image, checksums and a keyless Cosign signature.

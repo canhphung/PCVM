@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/canhphung/smart-multiegg/internal/multiegg"
+	"github.com/canhphung/PCVM/internal/pcvm"
 )
 
 var client = &http.Client{Timeout: 60 * time.Second}
@@ -21,11 +21,11 @@ var client = &http.Client{Timeout: 60 * time.Second}
 func main() {
 	out := flag.String("out", "runtime-manifest.json", "output file")
 	flag.Parse()
-	var packs []multiegg.RuntimePackSpec
+	var packs []pcvm.RuntimePackSpec
 	var err error
 	for _, major := range []string{"8", "11", "17", "21", "25"} {
 		for _, arch := range []string{"amd64", "arm64"} {
-			var p multiegg.RuntimePackSpec
+			var p pcvm.RuntimePackSpec
 			p, err = javaPack(major, arch)
 			if err != nil {
 				fatal(err)
@@ -35,7 +35,7 @@ func main() {
 	}
 	for _, major := range []string{"22", "24"} {
 		for _, arch := range []string{"amd64", "arm64"} {
-			var p multiegg.RuntimePackSpec
+			var p pcvm.RuntimePackSpec
 			p, err = nodePack(major, arch)
 			if err != nil {
 				fatal(err)
@@ -79,7 +79,7 @@ func main() {
 	fmt.Printf("wrote %d checksum-pinned runtime packs to %s\n", len(packs), *out)
 }
 
-func javaPack(major, arch string) (multiegg.RuntimePackSpec, error) {
+func javaPack(major, arch string) (pcvm.RuntimePackSpec, error) {
 	apiArch := map[string]string{"amd64": "x64", "arm64": "aarch64"}[arch]
 	endpoint := fmt.Sprintf("https://api.adoptium.net/v3/assets/latest/%s/hotspot?architecture=%s&image_type=jre&os=linux&vendor=eclipse", major, apiArch)
 	var data []struct {
@@ -92,22 +92,22 @@ func javaPack(major, arch string) (multiegg.RuntimePackSpec, error) {
 		} `json:"binary"`
 	}
 	if err := getJSON(endpoint, &data); err != nil {
-		return multiegg.RuntimePackSpec{}, err
+		return pcvm.RuntimePackSpec{}, err
 	}
 	if len(data) == 0 {
-		return multiegg.RuntimePackSpec{}, fmt.Errorf("no Temurin Java %s/%s", major, arch)
+		return pcvm.RuntimePackSpec{}, fmt.Errorf("no Temurin Java %s/%s", major, arch)
 	}
 	p := data[0].Binary.Package
-	return multiegg.RuntimePackSpec{Kind: "java", Version: major, Architecture: arch, URL: p.Link, SHA256: p.Checksum, Executable: "*/bin/java", Archive: "tar.gz"}, nil
+	return pcvm.RuntimePackSpec{Kind: "java", Version: major, Architecture: arch, URL: p.Link, SHA256: p.Checksum, Executable: "*/bin/java", Archive: "tar.gz"}, nil
 }
 
-func nodePack(major, arch string) (multiegg.RuntimePackSpec, error) {
+func nodePack(major, arch string) (pcvm.RuntimePackSpec, error) {
 	var releases []struct {
 		Version string `json:"version"`
 		LTS     any    `json:"lts"`
 	}
 	if err := getJSON("https://nodejs.org/dist/index.json", &releases); err != nil {
-		return multiegg.RuntimePackSpec{}, err
+		return pcvm.RuntimePackSpec{}, err
 	}
 	version := ""
 	for _, r := range releases {
@@ -117,13 +117,13 @@ func nodePack(major, arch string) (multiegg.RuntimePackSpec, error) {
 		}
 	}
 	if version == "" {
-		return multiegg.RuntimePackSpec{}, fmt.Errorf("no Node.js %s", major)
+		return pcvm.RuntimePackSpec{}, fmt.Errorf("no Node.js %s", major)
 	}
 	nodeArch := map[string]string{"amd64": "x64", "arm64": "arm64"}[arch]
 	name := fmt.Sprintf("node-%s-linux-%s.tar.gz", version, nodeArch)
 	sums, err := getText("https://nodejs.org/dist/" + version + "/SHASUMS256.txt")
 	if err != nil {
-		return multiegg.RuntimePackSpec{}, err
+		return pcvm.RuntimePackSpec{}, err
 	}
 	checksum := ""
 	scan := bufio.NewScanner(strings.NewReader(sums))
@@ -135,9 +135,9 @@ func nodePack(major, arch string) (multiegg.RuntimePackSpec, error) {
 		}
 	}
 	if checksum == "" {
-		return multiegg.RuntimePackSpec{}, fmt.Errorf("Node checksum absent for %s", name)
+		return pcvm.RuntimePackSpec{}, fmt.Errorf("Node checksum absent for %s", name)
 	}
-	return multiegg.RuntimePackSpec{Kind: "node", Version: major, Architecture: arch, URL: "https://nodejs.org/dist/" + version + "/" + name, SHA256: checksum, Executable: "*/bin/node", Archive: "tar.gz"}, nil
+	return pcvm.RuntimePackSpec{Kind: "node", Version: major, Architecture: arch, URL: "https://nodejs.org/dist/" + version + "/" + name, SHA256: checksum, Executable: "*/bin/node", Archive: "tar.gz"}, nil
 }
 
 type asset struct{ Name, URL, Digest string }
@@ -159,7 +159,7 @@ func githubAssets(repo string) ([]asset, error) {
 	}
 	return out, nil
 }
-func pythonPack(minor, arch string, assets []asset) (multiegg.RuntimePackSpec, error) {
+func pythonPack(minor, arch string, assets []asset) (pcvm.RuntimePackSpec, error) {
 	platform := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[arch] + "-unknown-linux-gnu-install_only.tar.gz"
 	var matches []asset
 	for _, a := range assets {
@@ -169,18 +169,18 @@ func pythonPack(minor, arch string, assets []asset) (multiegg.RuntimePackSpec, e
 	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].Name > matches[j].Name })
 	if len(matches) == 0 || len(matches[0].Digest) != 64 {
-		return multiegg.RuntimePackSpec{}, fmt.Errorf("no digested Python %s/%s asset", minor, arch)
+		return pcvm.RuntimePackSpec{}, fmt.Errorf("no digested Python %s/%s asset", minor, arch)
 	}
 	a := matches[0]
-	return multiegg.RuntimePackSpec{Kind: "python", Version: minor, Architecture: arch, URL: a.URL, SHA256: a.Digest, Executable: "python/bin/python3", Archive: "tar.gz"}, nil
+	return pcvm.RuntimePackSpec{Kind: "python", Version: minor, Architecture: arch, URL: a.URL, SHA256: a.Digest, Executable: "python/bin/python3", Archive: "tar.gz"}, nil
 }
-func phpPack(assets []asset) (multiegg.RuntimePackSpec, error) {
+func phpPack(assets []asset) (pcvm.RuntimePackSpec, error) {
 	for _, a := range assets {
 		if strings.HasPrefix(a.Name, "PHP-") && strings.Contains(a.Name, "Linux-x86_64") && !strings.Contains(a.Name, "debug") && strings.HasSuffix(a.Name, ".tar.gz") && len(a.Digest) == 64 {
-			return multiegg.RuntimePackSpec{Kind: "php-pmmp", Version: "pmmp", Architecture: "amd64", URL: a.URL, SHA256: a.Digest, Executable: "bin/php7/bin/php", Archive: "tar.gz"}, nil
+			return pcvm.RuntimePackSpec{Kind: "php-pmmp", Version: "pmmp", Architecture: "amd64", URL: a.URL, SHA256: a.Digest, Executable: "bin/php7/bin/php", Archive: "tar.gz"}, nil
 		}
 	}
-	return multiegg.RuntimePackSpec{}, fmt.Errorf("no digested PocketMine PHP Linux x86_64 asset")
+	return pcvm.RuntimePackSpec{}, fmt.Errorf("no digested PocketMine PHP Linux x86_64 asset")
 }
 
 func getJSON(raw string, value any) error {
@@ -206,7 +206,7 @@ func request(raw string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("invalid URL")
 	}
 	req, _ := http.NewRequest(http.MethodGet, raw, nil)
-	req.Header.Set("User-Agent", "Smart-MultiEgg-runtime-manifest")
+	req.Header.Set("User-Agent", "PCVM-runtime-manifest")
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" && u.Hostname() == "api.github.com" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
