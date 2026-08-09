@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build native PCVM image
-        run: docker build --build-arg VERSION=1.7.0 --build-arg PROFILE=core -t pcvm:full-app-smoke .
+        run: docker build --build-arg VERSION=1.8.0 --build-arg PROFILE=core -t pcvm:full-app-smoke .
       - name: Install code-server, authenticate and stop safely
         run: |
           set -euo pipefail

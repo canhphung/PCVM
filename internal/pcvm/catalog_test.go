@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+var catalogTestMemory = MemorySpec{Strategy: "cgroup-only", RecommendedMB: 128}
+
 func TestEmbeddedCatalog(t *testing.T) {
 	c, err := LoadCatalog(nil)
 	if err != nil {
@@ -12,6 +14,14 @@ func TestEmbeddedCatalog(t *testing.T) {
 	}
 	if len(c.Providers) != 43 {
 		t.Fatalf("providers=%d, want 43", len(c.Providers))
+	}
+	strategies := map[string]int{}
+	for _, provider := range c.Providers {
+		strategies[provider.Memory.Strategy]++
+	}
+	if strategies["jvm-heap"] != 12 || strategies["node-heap"] != 2 || strategies["php-limit"] != 1 ||
+		strategies["dotnet-gc"] != 1 || strategies["qemu-guest"] != 5 || strategies["cgroup-only"] != 22 {
+		t.Fatalf("unexpected memory strategy matrix: %#v", strategies)
 	}
 	if _, ok := c.Provider("waterfall"); ok {
 		t.Fatal("Waterfall must not be shipped")
@@ -41,6 +51,33 @@ func TestEmbeddedCatalog(t *testing.T) {
 	}
 	if !re.MatchString("[Server thread/INFO]: Done (1.234s)! For help, type \"help\"") {
 		t.Fatalf("Vanilla ready pattern %q did not match a real startup line", vanilla.ReadyPatterns[0])
+	}
+}
+
+func TestEmbeddedCatalogMemoryProfiles(t *testing.T) {
+	c, err := LoadCatalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wants := map[string]MemorySpec{
+		"paper":       {Strategy: "jvm-heap", RecommendedMB: 1024, HardMinimumMB: 384},
+		"forge":       {Strategy: "jvm-heap", RecommendedMB: 2048, HardMinimumMB: 384},
+		"velocity":    {Strategy: "jvm-heap", RecommendedMB: 512, HardMinimumMB: 384},
+		"bedrock":     {Strategy: "cgroup-only", RecommendedMB: 1024},
+		"pocketmine":  {Strategy: "php-limit", RecommendedMB: 512, HardMinimumMB: 256},
+		"lavalink":    {Strategy: "jvm-heap", RecommendedMB: 1024, HardMinimumMB: 384},
+		"nginx":       {Strategy: "cgroup-only", RecommendedMB: 128},
+		"node-bot":    {Strategy: "node-heap", RecommendedMB: 256, HardMinimumMB: 256},
+		"python-bot":  {Strategy: "cgroup-only", RecommendedMB: 256},
+		"code-server": {Strategy: "node-heap", RecommendedMB: 512, HardMinimumMB: 256},
+		"tmodloader":  {Strategy: "dotnet-gc", RecommendedMB: 1024, HardMinimumMB: 512},
+		"vm-alpine":   {Strategy: "qemu-guest", RecommendedMB: 1536, HardMinimumMB: 1536},
+	}
+	for id, want := range wants {
+		provider, ok := c.Provider(id)
+		if !ok || provider.Memory != want {
+			t.Fatalf("provider %s memory=%+v, want %+v", id, provider.Memory, want)
+		}
 	}
 }
 
@@ -81,7 +118,7 @@ func TestEmbeddedVMCatalogHasActiveAndLegacyPinnedImages(t *testing.T) {
 }
 
 func TestCatalogRejectsDuplicateAndUnpinnedRuntime(t *testing.T) {
-	c := Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{{ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "x", Installer: "x", MenuPath: []string{"apps"}}, {ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "x", Installer: "x", MenuPath: []string{"apps"}}}}
+	c := Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{{ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "x", Installer: "x", MenuPath: []string{"apps"}, Memory: catalogTestMemory}, {ID: "x", Name: "x", Family: "x", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "x", Installer: "x", MenuPath: []string{"apps"}, Memory: catalogTestMemory}}}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected duplicate error")
 	}
@@ -95,15 +132,15 @@ func TestCatalogRejectsDuplicateAndUnpinnedRuntime(t *testing.T) {
 func TestCatalogRejectsInvalidReadyPattern(t *testing.T) {
 	c := Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{{
 		ID: "broken", Name: "Broken", Family: "test", Architectures: []string{"amd64"},
-		Runtime: "native", Resolver: "test", Installer: "test", ReadyPatterns: []string{"Done ("}, MenuPath: []string{"apps"},
+		Runtime: "native", Resolver: "test", Installer: "test", ReadyPatterns: []string{"Done ("}, MenuPath: []string{"apps"}, Memory: catalogTestMemory,
 	}}}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected invalid ready pattern error")
 	}
 }
 
-func TestCatalogRejectsInvalidSchemaFourMetadata(t *testing.T) {
-	base := ProviderSpec{ID: "test", Name: "Test", Family: "test", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "test", Installer: "test", MenuPath: []string{"apps"}}
+func TestCatalogRejectsInvalidSchemaFiveMetadata(t *testing.T) {
+	base := ProviderSpec{ID: "test", Name: "Test", Family: "test", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "test", Installer: "test", MenuPath: []string{"apps"}, Memory: catalogTestMemory}
 	for name, mutate := range map[string]func(*ProviderSpec){
 		"menu":    func(p *ProviderSpec) { p.MenuPath = []string{"games", "unknown"} },
 		"arch":    func(p *ProviderSpec) { p.Architectures = []string{"amd64", "amd64"} },
@@ -115,6 +152,24 @@ func TestCatalogRejectsInvalidSchemaFourMetadata(t *testing.T) {
 			mutate(&provider)
 			if err := (Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{provider}}).Validate(); err == nil {
 				t.Fatal("invalid metadata was accepted")
+			}
+		})
+	}
+}
+
+func TestCatalogRejectsInvalidMemoryMetadata(t *testing.T) {
+	base := ProviderSpec{ID: "test", Name: "Test", Family: "test", Architectures: []string{"amd64"}, Runtime: "native", Resolver: "test", Installer: "test", MenuPath: []string{"apps"}, Memory: catalogTestMemory}
+	for name, memory := range map[string]MemorySpec{
+		"missing":      {},
+		"thresholds":   {Strategy: "cgroup-only", RecommendedMB: 128, HardMinimumMB: 256},
+		"unknown":      {Strategy: "dynamic", RecommendedMB: 128},
+		"incompatible": {Strategy: "jvm-heap", RecommendedMB: 512, HardMinimumMB: 384},
+	} {
+		t.Run(name, func(t *testing.T) {
+			provider := base
+			provider.Memory = memory
+			if err := (Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{provider}}).Validate(); err == nil {
+				t.Fatal("invalid memory metadata was accepted")
 			}
 		})
 	}

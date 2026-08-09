@@ -24,6 +24,16 @@ func catalogSpec(t *testing.T, id string) ProviderSpec {
 	return spec
 }
 
+func catalogMemoryPlan(t *testing.T, id string) MemoryPlan {
+	t.Helper()
+	spec := catalogSpec(t, id)
+	plan, err := planMemory(spec.Memory, Request{VMMemoryMB: "auto"}, vmTestPolicy(), MemorySnapshot{Source: "test", LimitMB: spec.Memory.RecommendedMB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
+
 func TestProviderPortRequirements(t *testing.T) {
 	home := t.TempDir()
 	cfg := Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 2456,
@@ -103,7 +113,7 @@ func TestCodeServerProcessUsesPrimaryPortAndPersistentPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{Home: home, Control: control, AllocationPort: 8080, Request: Request{CodeServerPassword: "correct-horse-battery"}}
-	process, err := NewProvider(catalogSpec(t, "code-server")).BuildProcess(context.Background(), cfg, LaunchState{Command: []string{binary}, WorkingDirectory: home})
+	process, err := NewProvider(catalogSpec(t, "code-server")).BuildProcess(context.Background(), cfg, LaunchState{Command: []string{binary}, WorkingDirectory: home}, catalogMemoryPlan(t, "code-server"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +127,9 @@ func TestCodeServerProcessUsesPrimaryPortAndPersistentPassword(t *testing.T) {
 	}
 	if strings.Contains(joined, cfg.Request.CodeServerPassword) {
 		t.Fatal("password leaked into argv")
+	}
+	if !contains(process.Environment, "NODE_OPTIONS=--max-old-space-size=384") {
+		t.Fatalf("code-server memory environment=%v", process.Environment)
 	}
 }
 
@@ -287,12 +300,15 @@ func TestTModLoaderBuildKeepsDotnetDLLArg(t *testing.T) {
 	cfg := Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 7777,
 		Request: Request{MaxPlayers: 8, GameWorld: "World"}}
 	state := LaunchState{Provider: "tmodloader", WorkingDirectory: filepath.Join(home, "game"), Command: []string{runtime, dll}}
-	process, err := NewProvider(catalogSpec(t, "tmodloader")).BuildProcess(context.Background(), cfg, state)
+	process, err := NewProvider(catalogSpec(t, "tmodloader")).BuildProcess(context.Background(), cfg, state, catalogMemoryPlan(t, "tmodloader"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(process.Command) < 2 || process.Command[0] != runtime || process.Command[1] != dll {
 		t.Fatalf("command=%v", process.Command)
+	}
+	if !contains(process.Environment, "DOTNET_GCHeapHardLimit=0x30000000") {
+		t.Fatalf("tModLoader memory environment=%v", process.Environment)
 	}
 }
 

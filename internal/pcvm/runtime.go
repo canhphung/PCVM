@@ -399,12 +399,19 @@ func extractRuntime(path, dst, kind string) error {
 func touch(path string) error { now := time.Now(); return os.Chtimes(path, now, now) }
 
 func (m RuntimeManager) Prune(keep string) error {
-	root := filepath.Join(m.Config.Control, "cache", "runtimes")
-	entries, err := os.ReadDir(root)
-	if os.IsNotExist(err) {
-		return nil
+	cacheRoot, exists, err := realCacheRoot(m.Config.Control)
+	if err != nil || !exists {
+		return err
 	}
-	if err != nil {
+	root := filepath.Join(cacheRoot, "runtimes")
+	var entries []os.DirEntry
+	if info, statErr := os.Lstat(root); os.IsNotExist(statErr) {
+		entries = nil
+	} else if statErr != nil {
+		return statErr
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("runtime cache is not a real directory")
+	} else if entries, err = os.ReadDir(root); err != nil {
 		return err
 	}
 	type item struct {
@@ -425,7 +432,9 @@ func (m RuntimeManager) Prune(keep string) error {
 		total += size
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].mod.After(items[j].mod) })
-	keep = filepath.Clean(keep)
+	if keep != "" {
+		keep = filepath.Clean(keep)
+	}
 	prior := ""
 	for _, it := range items {
 		if filepath.Clean(it.path) != keep {
@@ -443,8 +452,88 @@ func (m RuntimeManager) Prune(keep string) error {
 		}
 		total -= it.size
 	}
-	if total > m.Config.Policy.CacheLimitBytes && prior != "" {
+
+	keptRoots := map[string]bool{}
+	if keep != "" {
+		keptRoots[keep] = true
+	}
+	if prior != "" {
+		keptRoots[prior] = true
+	}
+	keptArchives := map[string]bool{}
+	for runtimeRoot := range keptRoots {
+		if archive := m.runtimeArchive(runtimeRoot); archive != "" {
+			keptArchives[filepath.Clean(archive)] = true
+		}
+	}
+	if err := pruneRuntimeDownloads(filepath.Join(cacheRoot, "downloads"), keptArchives); err != nil {
+		return err
+	}
+
+	// CACHE_LIMIT_MB is a limit for the complete PCVM cache, not merely the
+	// extracted runtime directory. Consumed artifacts/sources are removed by the
+	// app; the only optional LKG entry left here is the previous runtime pair.
+	total = dirSize(cacheRoot)
+	if m.Config.Policy.CacheLimitBytes > 0 && total > m.Config.Policy.CacheLimitBytes && prior != "" {
 		if err := os.RemoveAll(prior); err != nil {
+			return err
+		}
+		if archive := m.runtimeArchive(prior); archive != "" {
+			if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		total = dirSize(cacheRoot)
+	}
+	if m.Config.Policy.CacheLimitBytes > 0 && total > m.Config.Policy.CacheLimitBytes && m.Log != nil {
+		m.Log.Printf("WARNING: active runtime cache uses %d MB, above CACHE_LIMIT_MB=%d; active integrity files were retained", (total+1024*1024-1)/(1024*1024), m.Config.Policy.CacheLimitBytes/(1024*1024))
+	}
+	return nil
+}
+
+func (m RuntimeManager) runtimeRoot(kind, version string) string {
+	if kind == "" || kind == "native" || version == "" {
+		return ""
+	}
+	return filepath.Join(m.Config.Control, "cache", "runtimes", kind+"-"+version+"-"+m.Config.Arch)
+}
+
+func (m RuntimeManager) runtimeArchive(runtimeRoot string) string {
+	runtimeRoot = filepath.Clean(runtimeRoot)
+	for _, pack := range m.Catalog.RuntimePacks {
+		if pack.Architecture != m.Config.Arch || filepath.Clean(m.runtimeRoot(pack.Kind, pack.Version)) != runtimeRoot {
+			continue
+		}
+		rawURL := pack.URL
+		if m.Config.Policy.RuntimeMirror != "" {
+			rawURL = mirrorURL(m.Config.Policy.RuntimeMirror, pack.URL)
+		}
+		return filepath.Join(m.Config.Control, "cache", "downloads", filepath.Base(rawURL))
+	}
+	return ""
+}
+
+func pruneRuntimeDownloads(root string, keep map[string]bool) error {
+	info, err := os.Lstat(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("runtime download cache is not a real directory")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		path := filepath.Clean(filepath.Join(root, entry.Name()))
+		if keep[path] {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
 			return err
 		}
 	}

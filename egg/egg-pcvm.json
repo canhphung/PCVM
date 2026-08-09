@@ -4,13 +4,13 @@
   "exported_at": "2026-08-09T00:00:00+07:00",
   "name": "PCVM",
   "author": "canhphung@users.noreply.github.com",
-  "description": "PCVM v1.7.0: 43 providers with lightweight Core, Games and VM image profiles plus a backward-compatible Full image. No Panel/Wings modifications, KVM, inbound VM ports or arbitrary startup commands.",
+  "description": "PCVM v1.8.0: 43 providers with a cgroup-aware unified memory planner, lightweight Core, Games and VM image profiles, and a backward-compatible Full image.",
   "features": ["eula"],
   "docker_images": {
-    "PCVM 1.7.0 - Full (43 providers)": "ghcr.io/canhphung/pcvm:1.7.0",
-    "PCVM 1.7.0 - Core (21 providers)": "ghcr.io/canhphung/pcvm:1.7.0-core",
-    "PCVM 1.7.0 - Games (38 providers)": "ghcr.io/canhphung/pcvm:1.7.0-games",
-    "PCVM 1.7.0 - Virtual Machines (26 providers)": "ghcr.io/canhphung/pcvm:1.7.0-vm"
+    "PCVM 1.8.0 - Full (43 providers)": "ghcr.io/canhphung/pcvm:1.8.0",
+    "PCVM 1.8.0 - Core (21 providers)": "ghcr.io/canhphung/pcvm:1.8.0-core",
+    "PCVM 1.8.0 - Games (38 providers)": "ghcr.io/canhphung/pcvm:1.8.0-games",
+    "PCVM 1.8.0 - Virtual Machines (26 providers)": "ghcr.io/canhphung/pcvm:1.8.0-vm"
   },
   "file_denylist": [".pcvm"],
   "startup": "/usr/local/bin/pcvm run",
@@ -75,7 +75,7 @@
     {"name":"Support URL","description":"ADMIN POLICY: optional support page.","env_variable":"SUPPORT_URL","default_value":"","user_viewable":false,"user_editable":false,"rules":"nullable|string|max:2048","field_type":"text"},
     {"name":"Runtime Mirror URL","description":"ADMIN POLICY: optional HTTPS mirror base URL.","env_variable":"RUNTIME_MIRROR_URL","default_value":"","user_viewable":false,"user_editable":false,"rules":"nullable|string|max:2048","field_type":"text"},
     {"name":"Allowed Git Hosts","description":"ADMIN POLICY: public Git HTTPS hostname allowlist.","env_variable":"GIT_ALLOWED_HOSTS","default_value":"github.com,gitlab.com,codeberg.org","user_viewable":false,"user_editable":false,"rules":"required|string|max:512","field_type":"text"},
-    {"name":"Runtime Cache Limit","description":"ADMIN POLICY: runtime cache cap in MiB.","env_variable":"CACHE_LIMIT_MB","default_value":"2048","user_viewable":false,"user_editable":false,"rules":"required|integer|min:64|max:32768","field_type":"text"},
+    {"name":"PCVM Cache Limit","description":"ADMIN POLICY: global PCVM download and runtime cache cap in MiB.","env_variable":"CACHE_LIMIT_MB","default_value":"2048","user_viewable":false,"user_editable":false,"rules":"required|integer|min:64|max:32768","field_type":"text"},
     {"name":"Clear Console","description":"ADMIN POLICY: clear terminal screen and scrollback before pcvm run output.","env_variable":"CLEAR_CONSOLE","default_value":"1","user_viewable":false,"user_editable":false,"rules":"required|boolean","field_type":"text"}
   ]
 }

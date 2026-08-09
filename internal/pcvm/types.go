@@ -8,7 +8,7 @@ import (
 
 const (
 	StateSchema   = 3
-	CatalogSchema = 4
+	CatalogSchema = 5
 
 	ImageProfileCore  = "core"
 	ImageProfileGames = "games"
@@ -39,9 +39,15 @@ type ProviderSpec struct {
 	Ports         []PortRequirement `json:"ports,omitempty"`
 	Readiness     ReadinessSpec     `json:"readiness,omitempty"`
 	Control       ControlSpec       `json:"control,omitempty"`
-	MinimumMemory int               `json:"minimum_memory_mb,omitempty"`
+	Memory        MemorySpec        `json:"memory"`
 	MinimumDisk   int               `json:"minimum_disk_mb,omitempty"`
 	VMImages      []VMImageSpec     `json:"vm_images,omitempty"`
+}
+
+type MemorySpec struct {
+	Strategy      string `json:"strategy"`
+	RecommendedMB int    `json:"recommended_mb"`
+	HardMinimumMB int    `json:"hard_minimum_mb"`
 }
 
 type VMImageSpec struct {
@@ -234,7 +240,7 @@ type Provider interface {
 	Spec() ProviderSpec
 	Resolve(context.Context, Request, *HTTPClient) (Resolved, error)
 	Install(context.Context, InstallContext, Resolved) (Resolved, error)
-	BuildProcess(context.Context, Config, LaunchState) (ProcessSpec, error)
+	BuildProcess(context.Context, Config, LaunchState, MemoryPlan) (ProcessSpec, error)
 	CompareVersions(a, b string) int
 }
 

@@ -175,7 +175,7 @@ func TestMTAResolverUsesPinnedBundleIdentity(t *testing.T) {
 func TestBedrockJavaProcessArguments(t *testing.T) {
 	state := LaunchState{Command: []string{"java", "-jar", "server.jar"}, WorkingDirectory: "/home/container"}
 	cfg := Config{AllocationPort: 19140, Request: Request{ServerName: "PCVM Bedrock"}}
-	power, err := NewProvider(catalogSpec(t, "powernukkitx")).BuildProcess(context.Background(), cfg, state)
+	power, err := NewProvider(catalogSpec(t, "powernukkitx")).BuildProcess(context.Background(), cfg, state, catalogMemoryPlan(t, "powernukkitx"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestBedrockJavaProcessArguments(t *testing.T) {
 			t.Fatalf("PowerNukkitX command missing %q: %v", want, power.Command)
 		}
 	}
-	cloudburst, err := NewProvider(catalogSpec(t, "cloudburst-nukkit")).BuildProcess(context.Background(), cfg, state)
+	cloudburst, err := NewProvider(catalogSpec(t, "cloudburst-nukkit")).BuildProcess(context.Background(), cfg, state, catalogMemoryPlan(t, "cloudburst-nukkit"))
 	if err != nil {
 		t.Fatal(err)
 	}

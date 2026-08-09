@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       - name: Build AMD64 image
-        run: docker build --build-arg VERSION=1.7.0 --build-arg PROFILE=games -t pcvm:full-game-smoke .
+        run: docker build --build-arg VERSION=1.8.0 --build-arg PROFILE=games -t pcvm:full-game-smoke .
       - name: Install, reach readiness and stop safely
         env:
           PROVIDER: ${{ inputs.provider }}

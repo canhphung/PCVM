@@ -101,8 +101,16 @@ func validateVMRequest(spec ProviderSpec, cfg Config) error {
 	if _, err := validateVMCompression(cfg.Request.VMDiskCompression); err != nil {
 		return err
 	}
-	_, err := calculateVMResources(cfg.Request, cfg.Policy, readHostCgroupLimits())
-	return err
+	if cfg.Request.VMMemoryMB != "" && cfg.Request.VMMemoryMB != "auto" {
+		memory, err := strconv.Atoi(cfg.Request.VMMemoryMB)
+		if err != nil {
+			return fmt.Errorf("VM_MEMORY_MB must be auto or an integer")
+		}
+		if memory < 768 || memory > cfg.Policy.VMMaxMemoryMB {
+			return fmt.Errorf("VM_MEMORY_MB must be at least 768 and no more than VM_MAX_MEMORY_MB (%d)", cfg.Policy.VMMaxMemoryMB)
+		}
+	}
+	return nil
 }
 
 func normalizeVMCompression(value string) string {
@@ -135,11 +143,6 @@ type cgroupLimits struct {
 
 func readHostCgroupLimits() cgroupLimits {
 	limits := cgroupLimits{}
-	if raw, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		limits.MemoryLimitMB = parseCgroupMemory(string(raw))
-	} else if raw, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
-		limits.MemoryLimitMB = parseCgroupMemory(string(raw))
-	}
 	if raw, err := os.ReadFile("/sys/fs/cgroup/cpu.max"); err == nil {
 		limits.CPUQuota = parseCgroupV2CPU(string(raw))
 	} else {
@@ -169,50 +172,19 @@ func parseCgroupV1CPU(quotaRaw, periodRaw string) float64 {
 	return quota / period
 }
 
-func parseCgroupMemory(raw string) int {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "max" {
-		return 0
+func calculateVMResources(req Request, policy Policy, limits cgroupLimits) (vmResources, error) {
+	memory, err := planMemory(MemorySpec{Strategy: "qemu-guest", RecommendedMB: vmMinimumContainerMB, HardMinimumMB: vmMinimumContainerMB}, req, policy, MemorySnapshot{Source: "test", LimitMB: limits.MemoryLimitMB})
+	if err != nil {
+		return vmResources{}, err
 	}
-	bytes, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || bytes <= 0 || bytes >= 1<<60 {
-		return 0
-	}
-	return int(bytes / (1024 * 1024))
+	return calculateVMResourcesWithPlan(req, policy, limits.CPUQuota, memory)
 }
 
-func calculateVMResources(req Request, policy Policy, limits cgroupLimits) (vmResources, error) {
-	if limits.MemoryLimitMB > 0 && limits.MemoryLimitMB < vmMinimumContainerMB {
-		return vmResources{}, fmt.Errorf("VM requires a container memory limit of at least %d MB", vmMinimumContainerMB)
-	}
-	memory := 0
-	if req.VMMemoryMB == "" || req.VMMemoryMB == "auto" {
-		if limits.MemoryLimitMB == 0 {
-			memory = vmDefaultMemoryMB
-		} else {
-			memory = (limits.MemoryLimitMB * 75 / 100 / 128) * 128
-		}
-		if memory > policy.VMMaxMemoryMB {
-			memory = policy.VMMaxMemoryMB / 128 * 128
-		}
-	} else {
-		parsed, err := strconv.Atoi(req.VMMemoryMB)
-		if err != nil {
-			return vmResources{}, fmt.Errorf("VM_MEMORY_MB must be auto or an integer")
-		}
-		memory = parsed
-	}
-	if memory < 768 || memory > policy.VMMaxMemoryMB {
-		return vmResources{}, fmt.Errorf("VM_MEMORY_MB must be at least 768 and no more than VM_MAX_MEMORY_MB (%d)", policy.VMMaxMemoryMB)
-	}
-	if limits.MemoryLimitMB > 0 && memory > limits.MemoryLimitMB-vmHostReserveMB {
-		return vmResources{}, fmt.Errorf("VM_MEMORY_MB must leave at least %d MB for QEMU and PCVM", vmHostReserveMB)
-	}
-
+func calculateVMResourcesWithPlan(req Request, policy Policy, cpuQuota float64, memory MemoryPlan) (vmResources, error) {
 	quotaCPUs := 0
-	if limits.CPUQuota > 0 {
-		quotaCPUs = int(limits.CPUQuota)
-		if float64(quotaCPUs) < limits.CPUQuota {
+	if cpuQuota > 0 {
+		quotaCPUs = int(cpuQuota)
+		if float64(quotaCPUs) < cpuQuota {
 			quotaCPUs++
 		}
 		if quotaCPUs < 1 {
@@ -241,7 +213,7 @@ func calculateVMResources(req Request, policy Policy, limits cgroupLimits) (vmRe
 	if quotaCPUs > 0 && cpus > quotaCPUs {
 		return vmResources{}, fmt.Errorf("VM_CPUS=%d exceeds the container CPU quota (%d)", cpus, quotaCPUs)
 	}
-	return vmResources{MemoryMB: memory, CPUs: cpus}, nil
+	return vmResources{MemoryMB: memory.TargetMB, CPUs: cpus}, nil
 }
 
 func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
@@ -740,8 +712,8 @@ runcmd:
 `, hostname, encode(autologin), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))
 }
 
-func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState) (ProcessSpec, error) {
-	resources, err := calculateVMResources(cfg.Request, cfg.Policy, readHostCgroupLimits())
+func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory MemoryPlan) (ProcessSpec, error) {
+	resources, err := calculateVMResourcesWithPlan(cfg.Request, cfg.Policy, readHostCgroupLimits().CPUQuota, memory)
 	if err != nil {
 		return ProcessSpec{}, err
 	}

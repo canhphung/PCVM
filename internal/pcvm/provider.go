@@ -24,12 +24,20 @@ func NewProvider(spec ProviderSpec) Provider               { return &catalogProv
 func (p *catalogProvider) Spec() ProviderSpec              { return p.spec }
 func (p *catalogProvider) CompareVersions(a, b string) int { return CompareVersions(a, b) }
 
-func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state LaunchState) (ProcessSpec, error) {
+func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state LaunchState, memory MemoryPlan) (ProcessSpec, error) {
 	if p.spec.Installer == "qemu-vm" {
-		return p.buildVMProcess(cfg, state)
+		process, err := p.buildVMProcess(cfg, state, memory)
+		if err != nil {
+			return ProcessSpec{}, err
+		}
+		return applyMemoryPlan(p.spec, process, memory)
 	}
 	if p.spec.Installer == "web" || p.spec.Installer == "code-server" || len(p.spec.MenuPath) > 0 && p.spec.MenuPath[0] == "games" {
-		return p.buildServiceProcess(ctx, cfg, state)
+		process, err := p.buildServiceProcess(ctx, cfg, state)
+		if err != nil {
+			return ProcessSpec{}, err
+		}
+		return applyMemoryPlan(p.spec, process, memory)
 	}
 	readiness := p.spec.Readiness
 	if readiness.Mode == "" && len(state.ReadyPatterns) > 0 {
@@ -46,9 +54,10 @@ func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state La
 	case "cloudburst-nukkit":
 		command = append(command, "--language", "eng")
 	}
-	return ProcessSpec{Command: command, Directory: state.WorkingDirectory,
+	process := ProcessSpec{Command: command, Directory: state.WorkingDirectory,
 		Environment: append([]string(nil), state.Environment...), ReadyPatterns: append([]string(nil), state.ReadyPatterns...),
-		StopCommand: state.StopCommand, Readiness: readiness, Control: control}, nil
+		StopCommand: state.StopCommand, Readiness: readiness, Control: control}
+	return applyMemoryPlan(p.spec, process, memory)
 }
 
 func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPClient) (Resolved, error) {
@@ -682,7 +691,7 @@ func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolv
 			return resolved, err
 		}
 		resolved.WorkDir = ic.Home
-		resolved.Command = []string{ic.Runtime, "-Xms128M", "-Xmx" + serverMemory(), "-jar", target}
+		resolved.Command = []string{ic.Runtime, "-jar", target}
 		if strings.HasPrefix(p.spec.Family, "minecraft-java-") {
 			resolved.Command = append(resolved.Command, "nogui")
 		}
@@ -916,6 +925,16 @@ func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r R
 			if _, err := os.Stat(filepath.Join(source, "package-lock.json")); err == nil {
 				npmArgs[0] = "ci"
 			}
+			cacheRoot := filepath.Join(ic.ControlDir, "cache")
+			if err := secureMkdirAll(ic.ControlDir, cacheRoot, 0o750); err != nil {
+				return r, fmt.Errorf("prepare temporary npm cache: %w", err)
+			}
+			cache, err := os.MkdirTemp(cacheRoot, ".npm-cache-")
+			if err != nil {
+				return r, fmt.Errorf("create temporary npm cache: %w", err)
+			}
+			defer os.RemoveAll(cache)
+			npmArgs = append(npmArgs, "--cache", cache)
 			cmd := exec.CommandContext(ctx, npm, npmArgs...)
 			cmd.Dir = source
 			cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(ic.Runtime)+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -937,7 +956,7 @@ func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r R
 			}
 		}
 		if _, err := os.Stat(filepath.Join(source, "requirements.txt")); err == nil {
-			cmd := exec.CommandContext(ctx, venvPython, "-m", "pip", "install", "--disable-pip-version-check", "-r", "requirements.txt")
+			cmd := exec.CommandContext(ctx, venvPython, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "-r", "requirements.txt")
 			cmd.Dir = source
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
@@ -1152,14 +1171,6 @@ func linkMutableData(home, work string, dirs, files []string) error {
 		}
 	}
 	return nil
-}
-
-func serverMemory() string {
-	value := envDefault("SERVER_MEMORY", "1024")
-	if matched, _ := regexp.MatchString(`^[0-9]+$`, value); matched {
-		return value + "M"
-	}
-	return value
 }
 
 var _ = json.Valid

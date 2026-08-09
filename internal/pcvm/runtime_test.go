@@ -43,6 +43,70 @@ func TestCachePruningKeepsCurrentAndOnePrevious(t *testing.T) {
 	}
 }
 
+func TestCachePruningPairsRuntimeArchivesAndUsesGlobalLimit(t *testing.T) {
+	home := t.TempDir()
+	control := filepath.Join(home, ".pcvm")
+	root := filepath.Join(control, "cache", "runtimes")
+	packs := []RuntimePackSpec{
+		{Kind: "java", Version: "17", Architecture: "amd64", URL: "https://example.com/java17.tar.gz"},
+		{Kind: "java", Version: "21", Architecture: "amd64", URL: "https://example.com/java21.tar.gz"},
+		{Kind: "node", Version: "24", Architecture: "amd64", URL: "https://example.com/node24.tar.gz"},
+	}
+	for i, pack := range packs {
+		runtimeRoot := filepath.Join(root, pack.Kind+"-"+pack.Version+"-"+pack.Architecture)
+		if err := os.MkdirAll(runtimeRoot, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runtimeRoot, "payload"), bytes.Repeat([]byte("x"), 8), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		when := time.Unix(int64(100+i), 0)
+		if err := os.Chtimes(runtimeRoot, when, when); err != nil {
+			t.Fatal(err)
+		}
+		archive := filepath.Join(control, "cache", "downloads", filepath.Base(pack.URL))
+		if err := os.MkdirAll(filepath.Dir(archive), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(archive, bytes.Repeat([]byte("y"), 8), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := RuntimeManager{Catalog: Catalog{RuntimePacks: packs}, Config: Config{
+		Control: control, Arch: "amd64", Policy: Policy{CacheLimitBytes: 100},
+	}}
+	current := filepath.Join(root, "node-24-amd64")
+	if err := m.Prune(current); err != nil {
+		t.Fatal(err)
+	}
+	for _, retained := range []string{
+		current, filepath.Join(control, "cache", "downloads", "node24.tar.gz"),
+		filepath.Join(root, "java-21-amd64"), filepath.Join(control, "cache", "downloads", "java21.tar.gz"),
+	} {
+		if _, err := os.Stat(retained); err != nil {
+			t.Fatalf("active/previous runtime pair removed: %s: %v", retained, err)
+		}
+	}
+	for _, removed := range []string{
+		filepath.Join(root, "java-17-amd64"), filepath.Join(control, "cache", "downloads", "java17.tar.gz"),
+	} {
+		if _, err := os.Stat(removed); !os.IsNotExist(err) {
+			t.Fatalf("expired cache retained: %s: %v", removed, err)
+		}
+	}
+	m.Config.Policy.CacheLimitBytes = 20
+	if err := m.Prune(current); err != nil {
+		t.Fatal(err)
+	}
+	for _, removed := range []string{
+		filepath.Join(root, "java-21-amd64"), filepath.Join(control, "cache", "downloads", "java21.tar.gz"),
+	} {
+		if _, err := os.Stat(removed); !os.IsNotExist(err) {
+			t.Fatalf("previous runtime exceeded global quota but was retained: %s: %v", removed, err)
+		}
+	}
+}
+
 func TestRuntimeArchiveAllowsInternalSymlinkAndRejectsEscape(t *testing.T) {
 	makeArchive := func(link string) string {
 		var data bytes.Buffer

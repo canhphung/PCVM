@@ -32,12 +32,12 @@ jobs:
           go run ./cmd/pcvm version
           jq -e '.meta.version == "PTDL_v2" and .startup == "/usr/local/bin/pcvm run"' egg/egg-pcvm.json
           jq -e 'length == 27 and all(.[]; (.sha256 | length) == 64)' runtime-manifest.json
-          jq -e '.schema == 4 and .version == "1.7.0" and (.providers | length) == 43 and ([.providers[].vm_images[]?] | length) == 24 and ([.providers[].vm_images[]? | select(.deprecated != true)] | length) == 20 and ([.providers[].vm_images[]? | select(.deprecated == true)] | length) == 4' internal/pcvm/catalog.json
+          jq -e '.schema == 5 and .version == "1.8.0" and (.providers | length) == 43 and all(.providers[]; (.memory.strategy | length) > 0 and .memory.recommended_mb > 0 and .memory.hard_minimum_mb >= 0) and ([.providers[].vm_images[]?] | length) == 24 and ([.providers[].vm_images[]? | select(.deprecated != true)] | length) == 20 and ([.providers[].vm_images[]? | select(.deprecated == true)] | length) == 4' internal/pcvm/catalog.json
           jq -e '.docker_images == {
-            "PCVM 1.7.0 - Full (43 providers)":"ghcr.io/canhphung/pcvm:1.7.0",
-            "PCVM 1.7.0 - Core (21 providers)":"ghcr.io/canhphung/pcvm:1.7.0-core",
-            "PCVM 1.7.0 - Games (38 providers)":"ghcr.io/canhphung/pcvm:1.7.0-games",
-            "PCVM 1.7.0 - Virtual Machines (26 providers)":"ghcr.io/canhphung/pcvm:1.7.0-vm"
+            "PCVM 1.8.0 - Full (43 providers)":"ghcr.io/canhphung/pcvm:1.8.0",
+            "PCVM 1.8.0 - Core (21 providers)":"ghcr.io/canhphung/pcvm:1.8.0-core",
+            "PCVM 1.8.0 - Games (38 providers)":"ghcr.io/canhphung/pcvm:1.8.0-games",
+            "PCVM 1.8.0 - Virtual Machines (26 providers)":"ghcr.io/canhphung/pcvm:1.8.0-vm"
           }' egg/egg-pcvm.json
           jq -e '.file_denylist == [".pcvm"]' egg/egg-pcvm.json
           jq -e '.features == ["eula"] and ([.variables[].env_variable] | index("ACCEPT_MINECRAFT_EULA") | not)' egg/egg-pcvm.json
@@ -83,7 +83,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=1.7.0
+            VERSION=1.8.0
             PROFILE=${{ matrix.profile }}
           sbom: true
           provenance: mode=max
@@ -176,7 +176,7 @@ jobs:
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - name: Build architecture image
-        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.7.0 --build-arg PROFILE=core -t "pcvm:web-${ARCH}" .
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.8.0 --build-arg PROFILE=core -t "pcvm:web-${ARCH}" .
         env:
           ARCH: ${{ matrix.arch }}
       - name: Verify embedded core profile and package boundary
@@ -234,10 +234,76 @@ jobs:
             test "$(docker inspect -f '{{.State.Running}}' pcvm-under-test)" = false
             docker logs pcvm-under-test 2>&1 | grep -Fq 'resolves to blocked address'
           done
+      - name: Test cgroup memory budgets
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          cleanup() { docker rm -f pcvm-memory-budget >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          for limit in 512 96; do
+            cleanup
+            docker run --platform "linux/${ARCH}" -d --name pcvm-memory-budget \
+              --memory "${limit}m" --memory-swap "${limit}m" \
+              -e SOFTWARE=nginx -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 \
+              "pcvm:web-${ARCH}"
+            ready=0
+            for _ in $(seq 1 120); do
+              if docker logs pcvm-memory-budget 2>&1 | grep -Fq '[PCVM] READY'; then
+                ready=1
+                break
+              fi
+              if ! docker inspect -f '{{.State.Running}}' pcvm-memory-budget | grep -q true; then
+                docker logs pcvm-memory-budget
+                exit 1
+              fi
+              sleep 1
+            done
+            test "$ready" = 1
+            docker logs pcvm-memory-budget 2>&1 | grep -Fq "[PCVM] MEMORY source=cgroup-v2 limit=${limit}MB target=${limit}MB reserve=0MB strategy=cgroup-only recommended=128MB"
+            if [ "$limit" = 96 ]; then
+              docker logs pcvm-memory-budget 2>&1 | grep -Fq 'below the recommended 128 MB'
+            fi
+            docker stop --time 40 pcvm-memory-budget
+          done
+      - name: Test cgroup OOM diagnostics
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          cleanup() {
+            docker rm -f pcvm-memory-oom >/dev/null 2>&1 || true
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+          chmod 0777 "$work"
+          cat >"$work/index.js" <<'JS'
+          const blocks = [];
+          setInterval(() => {
+            for (let i = 0; i < 64; i++) blocks.push(Buffer.alloc(1024 * 1024, 1));
+          }, 1);
+          JS
+          docker run -d --name pcvm-memory-oom --memory 384m --memory-swap 384m \
+            --platform "linux/${ARCH}" \
+            -v "$work:/home/container" \
+            -e SOFTWARE=node-bot -e SOURCE_MODE=upload -e ENTRY_FILE=index.js \
+            -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 "pcvm:web-${ARCH}"
+          stopped=0
+          for _ in $(seq 1 300); do
+            if ! docker inspect -f '{{.State.Running}}' pcvm-memory-oom | grep -q true; then
+              stopped=1
+              break
+            fi
+            sleep 1
+          done
+          test "$stopped" = 1
+          docker logs pcvm-memory-oom 2>&1 | grep -Fq 'strategy=node-heap'
+          docker logs pcvm-memory-oom 2>&1 | grep -Fq 'OOM-killed by the container memory cgroup'
       - name: Build VM profile architecture image
         env:
           ARCH: ${{ matrix.arch }}
-        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.7.0 --build-arg PROFILE=vm -t "pcvm:vm-${ARCH}" .
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.8.0 --build-arg PROFILE=vm -t "pcvm:vm-${ARCH}" .
       - name: Verify non-root VM profile, QEMU and firmware under Wings-like restrictions
         env:
           ARCH: ${{ matrix.arch }}
@@ -259,7 +325,7 @@ jobs:
         if: matrix.arch == 'amd64'
         run: |
           set -euo pipefail
-          docker buildx build --platform linux/amd64 --load --build-arg VERSION=1.7.0 --build-arg PROFILE=games -t pcvm:games-amd64 .
+          docker buildx build --platform linux/amd64 --load --build-arg VERSION=1.8.0 --build-arg PROFILE=games -t pcvm:games-amd64 .
           test "$(docker run --rm --entrypoint /usr/local/bin/pcvm pcvm:games-amd64 profile)" = games
           docker run --rm --entrypoint /bin/sh pcvm:games-amd64 -ec \
             'test ! -x /usr/bin/qemu-img; dpkg --print-foreign-architectures | grep -qx i386; test -e /lib/ld-linux.so.2 -o -e /lib/i386-linux-gnu/ld-linux.so.2'

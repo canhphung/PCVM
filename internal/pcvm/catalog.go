@@ -68,8 +68,11 @@ func (c Catalog) Validate() error {
 			}
 			archSeen[arch] = true
 		}
-		if p.MinimumMemory < 0 || p.MinimumDisk < 0 {
+		if p.MinimumDisk < 0 {
 			return fmt.Errorf("provider %q has invalid resource metadata", p.ID)
+		}
+		if err := validateMemorySpec(p); err != nil {
+			return err
 		}
 		patterns := p.ReadyPatterns
 		if len(p.Readiness.Patterns) > 0 {
@@ -197,6 +200,34 @@ func (c Catalog) Validate() error {
 		if pack.URL == "" || len(pack.SHA256) != 64 || pack.Executable == "" {
 			return fmt.Errorf("runtime %s/%s/%s lacks a pinned URL, sha256, or executable", pack.Kind, pack.Version, pack.Architecture)
 		}
+	}
+	return nil
+}
+
+func validateMemorySpec(p ProviderSpec) error {
+	memory := p.Memory
+	if memory.RecommendedMB <= 0 || memory.HardMinimumMB < 0 || memory.HardMinimumMB > memory.RecommendedMB {
+		return fmt.Errorf("provider %q has invalid memory thresholds", p.ID)
+	}
+	valid := false
+	switch memory.Strategy {
+	case "jvm-heap":
+		valid = p.Runtime == "java"
+	case "node-heap":
+		valid = p.Runtime == "node" || p.Installer == "code-server"
+	case "php-limit":
+		valid = p.Runtime == "php-pmmp"
+	case "dotnet-gc":
+		valid = p.Runtime == "dotnet"
+	case "qemu-guest":
+		valid = p.Installer == "qemu-vm"
+	case "cgroup-only":
+		valid = p.Runtime != "java" && p.Runtime != "node" && p.Runtime != "php-pmmp" && p.Runtime != "dotnet" && p.Installer != "code-server" && p.Installer != "qemu-vm"
+	default:
+		return fmt.Errorf("provider %q has unsupported memory strategy %q", p.ID, memory.Strategy)
+	}
+	if !valid {
+		return fmt.Errorf("provider %q memory strategy %q is incompatible with runtime %q and installer %q", p.ID, memory.Strategy, p.Runtime, p.Installer)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package pcvm
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,13 @@ import (
 type recordingSupervisor struct {
 	called bool
 	spec   ProcessSpec
+}
+
+type oomSupervisor struct{ after func() }
+
+func (s oomSupervisor) Run(_ context.Context, _ ProcessSpec, _ io.Reader, _, _ io.Writer) error {
+	s.after()
+	return fmt.Errorf("signal: killed")
 }
 
 func (r *recordingSupervisor) Run(_ context.Context, s ProcessSpec, _ io.Reader, _ io.Writer, _ io.Writer) error {
@@ -184,6 +192,48 @@ func TestRunStateIgnoresStoredProcessMetadata(t *testing.T) {
 	}
 	if launch.Command[0] != wantCommand || strings.Contains(strings.Join(launch.Environment, "\n"), "LD_PRELOAD") || launch.StopCommand != "stop" {
 		t.Fatalf("stored process metadata was trusted: %+v", launch)
+	}
+}
+
+func TestRunStateReportsCgroupOOMKill(t *testing.T) {
+	home := t.TempDir()
+	control := filepath.Join(home, ".pcvm")
+	catalog, err := LoadCatalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := State{Provider: "bedrock", Family: "minecraft-bedrock-vanilla", ResolvedVersion: "1.21.0", ResolvedBuild: "release", Architecture: "amd64"}
+	command := filepath.Join(control, "managed", "bedrock", state.ResolvedVersion, "bedrock_server")
+	if err := os.MkdirAll(filepath.Dir(command), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(command, []byte("fixture"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "eula.txt"), []byte("eula=true\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	oomKills := "1"
+	original := memoryReadFile
+	memoryReadFile = func(path string) ([]byte, error) {
+		switch path {
+		case "/sys/fs/cgroup/memory.max":
+			return []byte("2147483648\n"), nil
+		case "/sys/fs/cgroup/memory.current":
+			return []byte("268435456\n"), nil
+		case "/sys/fs/cgroup/memory.events":
+			return []byte("oom_kill " + oomKills + "\n"), nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}
+	t.Cleanup(func() { memoryReadFile = original })
+	app := NewApp(Config{Home: home, Control: control, Arch: "amd64", Request: Request{AcceptEULA: true}, Policy: Policy{
+		AllowedSoftware: map[string]bool{"bedrock": true},
+	}}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
+	app.Supervisor = oomSupervisor{after: func() { oomKills = "2" }}
+	if err := app.runState(context.Background(), state); err == nil || !strings.Contains(err.Error(), "OOM-killed by the container memory cgroup") {
+		t.Fatalf("OOM kill was not diagnosed: %v", err)
 	}
 }
 

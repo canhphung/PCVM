@@ -57,7 +57,7 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 	case "jar":
 		target := filepath.Join(managed, version+"-"+build+"-server.jar")
 		launch.WorkingDirectory = a.Config.Home
-		launch.Command = []string{runtimePath, "-Xms128M", "-Xmx" + serverMemory(), "-jar", target}
+		launch.Command = []string{runtimePath, "-jar", target}
 		if strings.HasPrefix(spec.Family, "minecraft-java-") {
 			launch.Command = append(launch.Command, "nogui")
 		}

@@ -1,6 +1,6 @@
 # PCVM
 
-PCVM v1.7.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 43 providers without modifying Panel or Wings. Four capability-aware Docker image profiles let hosts avoid shipping QEMU and native game libraries to servers that do not use them. The Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
+PCVM v1.8.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 43 providers without modifying Panel or Wings. Four capability-aware Docker image profiles let hosts avoid shipping QEMU and native game libraries to servers that do not use them. The Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, cgroup-aware memory planning, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
 ## Provider catalog
 
@@ -23,7 +23,7 @@ All game providers are AMD64-only. `samp` installs the actively maintained open.
 
 ## Install on Pterodactyl
 
-1. Download `egg-pcvm-1.7.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+1. Download `egg-pcvm-1.8.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
 2. Import it into a Nest on Pterodactyl 1.12.x.
 3. Keep the default release-pinned Full image, or select a smaller profile from the Egg's Docker image list.
 4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
@@ -32,10 +32,10 @@ All game providers are AMD64-only. `samp` installs the actively maintained open.
 
 | Profile | Release tag | Provider capability | Catalog count |
 |---|---|---|---:|
-| Full | `ghcr.io/canhphung/pcvm:1.7.0` | Core + Games + Virtual Machines | 43 |
-| Core | `ghcr.io/canhphung/pcvm:1.7.0-core` | Minecraft, proxies, Bedrock, web and applications | 21 |
-| Games | `ghcr.io/canhphung/pcvm:1.7.0-games` | Core + native game servers | 38 |
-| Virtual Machines | `ghcr.io/canhphung/pcvm:1.7.0-vm` | Core + QEMU virtual machines | 26 |
+| Full | `ghcr.io/canhphung/pcvm:1.8.0` | Core + Games + Virtual Machines | 43 |
+| Core | `ghcr.io/canhphung/pcvm:1.8.0-core` | Minecraft, proxies, Bedrock, web and applications | 21 |
+| Games | `ghcr.io/canhphung/pcvm:1.8.0-games` | Core + native game servers | 38 |
+| Virtual Machines | `ghcr.io/canhphung/pcvm:1.8.0-vm` | Core + QEMU virtual machines | 26 |
 
 The Full image remains first and is the backward-compatible default. Provider counts describe profile capabilities before architecture filtering; all native game providers remain unavailable on ARM64. The image profile is compiled into the launcher and cannot be changed with a Startup Variable. Interactive menus hide providers that the selected image cannot run, while direct selection and existing state fail safely with an instruction to select the required image. Changing the Docker image profile does not reset or migrate server data.
 
@@ -63,6 +63,14 @@ PCVM reads Pterodactyl's primary `SERVER_PORT`, binds public services to `0.0.0.
 | Multi Theft Auto | `QUERY_PORT=SERVER_PORT+123` |
 
 Palworld and Rust RCON plus 7 Days to Die Telnet bind to loopback and use `RCON_PORT` or `TELNET_PORT`; they are launcher control channels, not public allocations. Missing, out-of-range, duplicate or invalid-offset ports stop startup with an exact error.
+
+## Memory planning
+
+PCVM calculates one memory budget on every boot from the container's cgroup v2 limit, cgroup v1 limit or `SERVER_MEMORY`, in that order. The cgroup always wins when both it and the Panel variable are available. The resulting `[PCVM] MEMORY ...` line records the source, allocation, runtime target, launcher reserve, strategy and recommended allocation without storing any of those values in server state.
+
+JVM providers receive an 80% heap target rounded down to 64 MiB. Node.js, PHP and .NET providers receive 75% rounded down to 64 MiB through their native runtime controls. QEMU guests retain the 75%/128 MiB profile and at least 384 MiB for QEMU plus the launcher; `VM_MEMORY_MB` remains the only user override and is still bounded by the container and admin cap. Native games, Python, web servers, Bedrock and other `cgroup-only` providers are not given an artificial userspace limit because Wings remains the hard enforcement layer.
+
+An allocation below a provider's recommendation emits a warning and still starts. Only the catalog's technical hard minimum prevents startup. If no finite allocation can be discovered, Java falls back to a 1024 MiB heap, VMs to a 1024 MiB guest and other runtimes keep their upstream defaults. PCVM samples cgroup OOM counters around the supervised process and reports a cgroup OOM kill explicitly; it does not resize memory, restart processes or run a background memory daemon.
 
 ## Game installation and control
 
@@ -122,6 +130,8 @@ Every Debian slim profile contains Nginx, Apache, Git, CA certificates, OpenSSL,
 - .NET 8 and SteamCMD on AMD64.
 
 Downloads require HTTPS, an allowlisted hostname, timeout/retry, a temporary file, checksum verification and atomic rename. Before every launch, PCVM derives a complete file/symlink manifest from the checksum-pinned runtime archive, verifies the extracted tree and repairs missing, changed, unexpected or escaping-symlink entries. ZIP and runtime extraction reject unsafe archive links, traversal, existing symlink targets and symlinked parent directories. The launcher never uses `curl | bash`, `eval`, arbitrary install commands or shell-composed startup commands.
+
+After a successful install, PCVM removes consumed software artifacts and prepared Git source caches. Runtime archives remain only for the active runtime and, while the global `CACHE_LIMIT_MB` budget permits, one previous runtime because they are required to verify the extracted runtime tree. VM base images are removed after the standalone QCOW2 disk is committed. npm and pip dependency installation uses disposable/no-download caches so package-manager archives do not accumulate in the server directory.
 
 ## Variables
 

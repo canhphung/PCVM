@@ -78,6 +78,9 @@ func (a *App) Run(ctx context.Context) error {
 	if err := ValidateProviderRequest(spec, a.Config); err != nil {
 		return err
 	}
+	if _, err := planMemory(spec.Memory, req, a.Config.Policy, readMemorySnapshot()); err != nil {
+		return fmt.Errorf("memory plan for %s: %w", spec.ID, err)
+	}
 	if (spec.ID == "node-bot" || spec.ID == "python-bot") && req.SourceMode == "git" {
 		if err := a.Config.ValidateGitURL(req.GitURL); err != nil {
 			return err
@@ -136,6 +139,9 @@ func (a *App) Run(ctx context.Context) error {
 	newState := State{Schema: StateSchema, Provider: spec.ID, Family: spec.Family, RequestedVersion: req.Version, RequestedBuild: req.Build, ResolvedVersion: installed.Artifact.Version, ResolvedBuild: installed.Artifact.Build, RuntimeKind: installed.RuntimeKind, RuntimeVersion: installed.RuntimeVersion, Architecture: a.Config.Arch, Artifact: installed.Artifact, LastUpdateRequest: req.UpdateRequest, InstalledAt: a.Now()}
 	if err := SaveState(a.Config.Control, newState); err != nil {
 		return err
+	}
+	if err := cleanupConsumedInstallCache(a.Config.Control); err != nil {
+		a.Log.Printf("WARNING: installed successfully but could not remove consumed cache: %v", err)
 	}
 	return a.runState(ctx, newState)
 }
@@ -341,9 +347,24 @@ func (a *App) runState(ctx context.Context, state State) error {
 			a.Log.Printf("migrated legacy %s VM install metadata", spec.ID)
 		}
 	}
+	memorySnapshot := readMemorySnapshot()
+	memoryPlan, err := planMemory(spec.Memory, a.Config.Request, a.Config.Policy, memorySnapshot)
+	if err != nil {
+		return fmt.Errorf("memory plan for %s: %w", state.Provider, err)
+	}
+	a.logMemoryPlan(memoryPlan)
 	launch, err := a.rebuildLaunchState(ctx, spec, state)
 	if err != nil {
 		return fmt.Errorf("rebuild trusted process metadata for %s: %w", state.Provider, err)
+	}
+	if err := cleanupConsumedInstallCache(a.Config.Control); err != nil {
+		a.Log.Printf("WARNING: consumed cache cleanup failed: %v", err)
+	}
+	manager := RuntimeManager{Catalog: a.Catalog, Config: a.Config, HTTP: a.HTTP, Log: a.Log}
+	// Runtime kind is catalog policy. Never let the user-writable state choose
+	// which integrity-checked runtime is retained or removed.
+	if err := manager.Prune(manager.runtimeRoot(spec.Runtime, state.RuntimeVersion)); err != nil {
+		a.Log.Printf("WARNING: cache pruning failed: %v", err)
 	}
 	allocationChanged, err := a.syncPrimaryAllocation(launch)
 	if err != nil {
@@ -352,7 +373,7 @@ func (a *App) runState(ctx context.Context, state State) error {
 	if allocationChanged {
 		a.Log.Printf("configured primary allocation 0.0.0.0:%d for %s", a.Config.AllocationPort, state.Provider)
 	}
-	process, err := NewProvider(spec).BuildProcess(ctx, a.Config, launch)
+	process, err := NewProvider(spec).BuildProcess(ctx, a.Config, launch, memoryPlan)
 	if err != nil {
 		return fmt.Errorf("build process for %s: %w", state.Provider, err)
 	}
@@ -370,7 +391,42 @@ func (a *App) runState(ctx context.Context, state State) error {
 	if process.StopTimeout == 0 {
 		process.StopTimeout = 30 * time.Second
 	}
-	return a.Supervisor.Run(ctx, process, a.In, a.Out, a.Err)
+	runErr := a.Supervisor.Run(ctx, process, a.In, a.Out, a.Err)
+	if after := readMemorySnapshot(); memoryOOMKilled(memorySnapshot, after) {
+		if runErr != nil {
+			return fmt.Errorf("process was OOM-killed by the container memory cgroup: %w", runErr)
+		}
+		return fmt.Errorf("process was OOM-killed by the container memory cgroup")
+	}
+	return runErr
+}
+
+func (a *App) logMemoryPlan(plan MemoryPlan) {
+	limit, target, reserve := "unknown", "runtime-default", "unknown"
+	if plan.LimitMB > 0 {
+		limit = fmt.Sprintf("%dMB", plan.LimitMB)
+		reserve = fmt.Sprintf("%dMB", plan.ReserveMB)
+	}
+	if plan.TargetMB > 0 {
+		target = fmt.Sprintf("%dMB", plan.TargetMB)
+	}
+	a.Log.Printf("MEMORY source=%s limit=%s target=%s reserve=%s strategy=%s recommended=%dMB", plan.Source, limit, target, reserve, plan.Strategy, plan.RecommendedMB)
+	if plan.CurrentKnown || plan.OOMSource != "" {
+		current, oomKills := "unknown", "unknown"
+		if plan.CurrentKnown {
+			current = fmt.Sprintf("%dMB", plan.CurrentMB)
+		}
+		if plan.OOMSource != "" {
+			oomKills = fmt.Sprintf("%d", plan.OOMKills)
+		}
+		a.Log.Printf("MEMORY diagnostics current=%s oom_kill=%s", current, oomKills)
+	}
+	if plan.BelowRecommended {
+		a.Log.Printf("WARNING: memory allocation %d MB is below the recommended %d MB for this provider", plan.LimitMB, plan.RecommendedMB)
+	}
+	if plan.UnknownLimit {
+		a.Log.Printf("WARNING: container memory limit is unknown; using the %s fallback", plan.Strategy)
+	}
 }
 
 func first(values []string) string {
