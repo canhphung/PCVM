@@ -274,7 +274,11 @@ jobs:
           work=$(mktemp -d)
           cleanup() {
             docker rm -f pcvm-memory-oom >/dev/null 2>&1 || true
-            rm -rf "$work"
+            # The container runs as UID 1000 and creates mode 0750 control
+            # directories. The hosted runner owns the mktemp path but cannot
+            # traverse those children without restoring ownership first.
+            sudo chown -R "$(id -u):$(id -g)" "$work" >/dev/null 2>&1 || true
+            rm -rf -- "$work"
           }
           trap cleanup EXIT
           chmod 0777 "$work"
