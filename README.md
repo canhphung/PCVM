@@ -1,6 +1,6 @@
 # PCVM
 
-PCVM v1.4.1 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 39 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
+PCVM v1.4.2 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 39 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
 ## Provider catalog
 
@@ -21,9 +21,9 @@ All game providers are AMD64-only. Web, Minecraft, application and VM providers 
 
 ## Install on Pterodactyl
 
-1. Download `egg-pcvm-1.4.1.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+1. Download `egg-pcvm-1.4.2.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
 2. Import it into a Nest on Pterodactyl 1.12.x.
-3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.4.1` image.
+3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.4.2` image.
 4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
 
 The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable startup command is:
@@ -84,6 +84,8 @@ Ubuntu, Debian, AlmaLinux and Rocky Linux run as real same-architecture QEMU sys
 
 The first boot downloads an immutable official cloud image, verifies SHA-256 or SHA-512, converts it to an independent sparse `vm/disk.qcow2`, resizes and checks it, and creates a NoCloud seed plus writable UEFI variables through a staged atomic install. The base image cache is then removed. `VM_MEMORY_MB`, `VM_CPUS`, `VM_DISK_GB` and `VM_HOSTNAME` control initial resources; admin caps are `VM_MAX_MEMORY_MB`, `VM_MAX_CPUS` and `VM_MAX_DISK_GB`.
 
+PCVM v1.4.2 automatically repairs the checksum identity written by v1.4.0/v1.4.1 Debian installs, including interrupted staging. The migration preserves `vm/disk.qcow2`, the NoCloud seed, UEFI variables, disk size and hostname; unrelated metadata mismatches remain blocked.
+
 VM image updates never modify an existing disk. Changing distro, version or pinned build requires the reset nonce flow. `AUTO_UPDATE` and `UPDATE_REQUEST` are rejected for VM providers; update packages from inside the guest. Panel stop uses QMP ACPI powerdown and waits up to 90 seconds. Back up `vm/disk.qcow2` only while the VM is stopped; snapshots are not supported in v1.4.
 
 ## Runtimes and downloads
@@ -105,7 +107,7 @@ Downloads require HTTPS, an allowlisted hostname, timeout/retry, a temporary fil
 
 The release Egg defines the full public interface. Main groups are:
 
-- Core: `SOFTWARE`, `SOFTWARE_VERSION`, `SOFTWARE_BUILD`, `RUNTIME_VERSION`, `AUTO_UPDATE`, `UPDATE_REQUEST`, `RESET_CONFIRM` and `ACCEPT_MINECRAFT_EULA`.
+- Core: `SOFTWARE`, `SOFTWARE_VERSION`, `SOFTWARE_BUILD`, `RUNTIME_VERSION`, `AUTO_UPDATE`, `UPDATE_REQUEST` and `RESET_CONFIRM`. Minecraft providers use Pterodactyl's native EULA popup: PCVM installs the selected provider, emits the standard EULA trigger before starting it, and continues automatically after **I Accept** writes `eula=true` and restarts the server. The legacy `ACCEPT_MINECRAFT_EULA=1` environment override remains supported but is no longer exposed as an Egg variable.
 - Games: `SERVER_NAME`, `SERVER_PASSWORD`, `ADMIN_PASSWORD`, `MAX_PLAYERS`, `GAME_MAP`, `GAME_WORLD`, `GAME_SEED`, `GAME_EXTRA_ARGS`, `STEAM_GSLT` and the port variables above.
 - Web: `WEB_MODE`, `WEB_ROOT`, `UPSTREAM_URL`.
 - Bots: `SOURCE_MODE`, `GIT_URL`, `GIT_BRANCH`, `ENTRY_FILE`, `APP_ARGS`, `APP_READY_PATTERN`.

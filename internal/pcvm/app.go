@@ -75,9 +75,6 @@ func (a *App) Run(ctx context.Context) error {
 	if err := ValidateProviderRequest(spec, a.Config); err != nil {
 		return err
 	}
-	if spec.RequiresEULA && !req.AcceptEULA {
-		return fmt.Errorf("set ACCEPT_MINECRAFT_EULA=1 to install %s", spec.Name)
-	}
 	if (spec.ID == "node-bot" || spec.ID == "python-bot") && req.SourceMode == "git" {
 		if err := a.Config.ValidateGitURL(req.GitURL); err != nil {
 			return err
@@ -290,6 +287,24 @@ func (a *App) runState(ctx context.Context, state State) error {
 	}
 	if err := ValidateProviderRequest(spec, a.Config); err != nil {
 		return err
+	}
+	if spec.RequiresEULA {
+		accepted, err := ensureMinecraftEULA(a.Config.Home, a.Config.Request.AcceptEULA)
+		if err != nil {
+			return fmt.Errorf("check Minecraft EULA acceptance: %w", err)
+		}
+		if !accepted {
+			return fmt.Errorf("%s", minecraftEULATrigger)
+		}
+	}
+	if spec.Installer == "qemu-vm" {
+		repaired, err := repairLegacyVMInstallMetadata(a.Config.Home, spec, state, a.Config.Arch)
+		if err != nil {
+			return fmt.Errorf("repair legacy VM install metadata: %w", err)
+		}
+		if repaired {
+			a.Log.Printf("repaired legacy %s VM checksum metadata", spec.ID)
+		}
 	}
 	launch, err := a.rebuildLaunchState(ctx, spec, state)
 	if err != nil {

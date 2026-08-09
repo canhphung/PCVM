@@ -2,7 +2,9 @@ package pcvm
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -211,11 +213,26 @@ func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, reso
 	if ic.Artifact == "" {
 		return resolved, fmt.Errorf("VM cloud image was not prepared")
 	}
+	image, ok := findVMImage(p.spec, resolved.Artifact.Version, resolved.Artifact.Build, ic.Request.Architecture)
+	if !ok {
+		return resolved, fmt.Errorf("resolved VM image is not pinned by the embedded catalog")
+	}
+	checksum := pinnedVMImageChecksum(image)
+	if checksum == "" {
+		return resolved, fmt.Errorf("resolved VM image has no pinned checksum")
+	}
 	meta := vmInstallMetadata{Schema: 1, Provider: p.spec.ID, Version: resolved.Artifact.Version, Build: resolved.Artifact.Build,
-		Architecture: ic.Request.Architecture, Checksum: firstNonEmpty(resolved.Artifact.SHA256, resolved.Artifact.SHA512),
+		Architecture: ic.Request.Architecture, Checksum: checksum,
 		DiskGB: ic.Request.VMDiskGB, Hostname: ic.Request.VMHostname}
 	finalDir := filepath.Join(ic.Home, "vm")
 	stageDir := filepath.Join(ic.ControlDir, "staging", "vm")
+	if image.SHA512 != "" && image.SHA256 == "" && strings.EqualFold(resolved.Artifact.SHA512, checksum) {
+		for _, dir := range []string{finalDir, stageDir} {
+			if _, err := repairLegacyVMMetadataFile(filepath.Join(dir, "install.json"), meta, resolved.Artifact.SHA256); err != nil {
+				return resolved, fmt.Errorf("repair legacy VM staging metadata: %w", err)
+			}
+		}
+	}
 	if exists, matches, err := vmDirectoryStatus(finalDir, meta); err != nil {
 		return resolved, err
 	} else if exists {
@@ -308,6 +325,102 @@ func vmDirectoryStatus(dir string, want vmInstallMetadata) (bool, bool, error) {
 		return true, false, nil
 	}
 	return true, got == want, nil
+}
+
+func findVMImage(spec ProviderSpec, version, build, arch string) (VMImageSpec, bool) {
+	for _, image := range spec.VMImages {
+		if image.Version == version && image.Build == build && image.Architecture == arch {
+			return image, true
+		}
+	}
+	return VMImageSpec{}, false
+}
+
+// pinnedVMImageChecksum returns the checksum authored in the embedded catalog.
+// SHA-512 takes precedence because Debian images are pinned only with SHA-512,
+// while Download also populates a convenience SHA-256 of the received bytes.
+func pinnedVMImageChecksum(image VMImageSpec) string {
+	return strings.ToLower(firstNonEmpty(image.SHA512, image.SHA256))
+}
+
+func repairLegacyVMMetadataFile(path string, want vmInstallMetadata, legacySHA256 string) (bool, error) {
+	legacySHA256 = strings.ToLower(legacySHA256)
+	decoded, err := hex.DecodeString(legacySHA256)
+	if err != nil || len(decoded) != sha256.Size {
+		return false, nil
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("VM install metadata must be a regular file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	var got vmInstallMetadata
+	if err := json.Unmarshal(data, &got); err != nil || !strings.EqualFold(got.Checksum, legacySHA256) {
+		return false, nil
+	}
+	got.Checksum = want.Checksum
+	if got != want {
+		return false, nil
+	}
+	if err := writeJSONAtomic(path, got); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// repairLegacyVMInstallMetadata repairs the v1.4.0/v1.4.1 Debian metadata bug:
+// Download added a computed SHA-256 and installVM accidentally persisted it
+// instead of Debian's catalog-pinned SHA-512. This migration changes only the
+// identity checksum; it never changes the disk, seed, firmware or process argv.
+func repairLegacyVMInstallMetadata(home string, spec ProviderSpec, state State, arch string) (bool, error) {
+	image, ok := findVMImage(spec, state.ResolvedVersion, state.ResolvedBuild, arch)
+	if !ok || image.SHA512 == "" || image.SHA256 != "" {
+		return false, nil
+	}
+	pinned := pinnedVMImageChecksum(image)
+	legacySHA256 := strings.ToLower(state.Artifact.SHA256)
+	decoded, err := hex.DecodeString(legacySHA256)
+	if err != nil || len(decoded) != sha256.Size || !strings.EqualFold(state.Artifact.SHA512, pinned) ||
+		state.Artifact.URL != image.URL || state.Artifact.Version != image.Version || state.Artifact.Build != image.Build {
+		return false, nil
+	}
+	path := filepath.Join(home, "vm", "install.json")
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("VM install metadata must be a regular file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	var meta vmInstallMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return false, nil
+	}
+	if meta.Provider != spec.ID || meta.Version != image.Version || meta.Build != image.Build || meta.Architecture != arch ||
+		!strings.EqualFold(meta.Checksum, legacySHA256) {
+		return false, nil
+	}
+	meta.Checksum = pinned
+	if err := writeJSONAtomic(path, meta); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func ensureVMStandaloneDisk(ctx context.Context, source, disk string, diskGB int, stdout, stderr anyWriter) error {
@@ -484,14 +597,9 @@ func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState) (Process
 		return ProcessSpec{}, fmt.Errorf("read VM install metadata: %w", err)
 	}
 	var meta vmInstallMetadata
-	stateChecksum := ""
-	for _, image := range p.spec.VMImages {
-		if image.Version == state.ResolvedVersion && image.Build == state.ResolvedBuild && image.Architecture == cfg.Arch {
-			stateChecksum = firstNonEmpty(image.SHA256, image.SHA512)
-			break
-		}
-	}
-	if stateChecksum == "" {
+	image, found := findVMImage(p.spec, state.ResolvedVersion, state.ResolvedBuild, cfg.Arch)
+	stateChecksum := pinnedVMImageChecksum(image)
+	if !found || stateChecksum == "" {
 		return ProcessSpec{}, fmt.Errorf("VM state does not reference an image pinned by the embedded catalog")
 	}
 	if err := json.Unmarshal(metaData, &meta); err != nil || meta.Provider != state.Provider || meta.Architecture != cfg.Arch ||

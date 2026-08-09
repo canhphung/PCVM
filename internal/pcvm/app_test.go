@@ -49,7 +49,7 @@ func TestInteractivePrefersExistingState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive"}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
+	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive", AcceptEULA: true}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
 	input := bytes.NewBufferString("invalid menu input")
 	app := NewApp(cfg, catalog, input, io.Discard, io.Discard)
 	supervisor := &recordingSupervisor{}
@@ -81,7 +81,7 @@ func TestInteractiveMigratesLegacyStateBeforeStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive"}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
+	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive", AcceptEULA: true}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
 	var output bytes.Buffer
 	app := NewApp(cfg, catalog, bytes.NewReader(nil), &output, &output)
 	supervisor := &recordingSupervisor{}
@@ -122,6 +122,43 @@ func TestPolicyBlocksProviderBeforeInstall(t *testing.T) {
 	app := NewApp(cfg, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
 	if err := app.Run(context.Background()); err == nil {
 		t.Fatal("disabled provider was accepted")
+	}
+}
+
+func TestPterodactylEULAGateBlocksThenStartsExistingProvider(t *testing.T) {
+	home := t.TempDir()
+	control := filepath.Join(home, ".pcvm")
+	catalog, err := LoadCatalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := State{Provider: "bedrock", Family: "minecraft-bedrock-vanilla", ResolvedVersion: "1.21.0", ResolvedBuild: "release", Architecture: "amd64"}
+	command := filepath.Join(control, "managed", "bedrock", state.ResolvedVersion, "bedrock_server")
+	if err := os.MkdirAll(filepath.Dir(command), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(command, []byte("fixture"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp(Config{Home: home, Control: control, Arch: "amd64", Request: Request{}, Policy: Policy{
+		AllowedSoftware: map[string]bool{"bedrock": true},
+	}}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
+	supervisor := &recordingSupervisor{}
+	app.Supervisor = supervisor
+	if err := app.runState(context.Background(), state); err == nil || !strings.Contains(err.Error(), minecraftEULATrigger) {
+		t.Fatalf("missing Pterodactyl EULA trigger: %v", err)
+	}
+	if supervisor.called {
+		t.Fatal("provider started before EULA acceptance")
+	}
+	if err := os.WriteFile(filepath.Join(home, "eula.txt"), []byte("eula=true"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.runState(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if !supervisor.called || supervisor.spec.Command[0] != command {
+		t.Fatalf("provider did not start after Panel acceptance: %+v", supervisor.spec)
 	}
 }
 

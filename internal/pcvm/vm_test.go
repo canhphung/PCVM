@@ -211,9 +211,13 @@ func TestVMStagedInstallAndResume(t *testing.T) {
 	if err := os.WriteFile(source, []byte("base"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	provider := &catalogProvider{spec: ProviderSpec{ID: "vm-debian", Installer: "qemu-vm"}}
+	pinnedSHA512 := strings.Repeat("a", 128)
+	downloadedSHA256 := strings.Repeat("b", 64)
+	provider := &catalogProvider{spec: ProviderSpec{ID: "vm-debian", Installer: "qemu-vm", VMImages: []VMImageSpec{{
+		Version: "13", Build: "build", Architecture: "amd64", SHA512: pinnedSHA512,
+	}}}}
 	request := Request{Architecture: "amd64", VMDiskGB: 10, VMHostname: "pcvm"}
-	resolved := Resolved{Artifact: Artifact{Version: "13", Build: "build", SHA512: strings.Repeat("a", 128)}}
+	resolved := Resolved{Artifact: Artifact{Version: "13", Build: "build", SHA256: downloadedSHA256, SHA512: pinnedSHA512}}
 	ic := InstallContext{Home: home, ControlDir: control, Artifact: source, Request: request, Out: io.Discard, Err: io.Discard}
 	installed, err := provider.installVM(context.Background(), ic, resolved)
 	if err != nil {
@@ -230,8 +234,85 @@ func TestVMStagedInstallAndResume(t *testing.T) {
 	if installed.Command[0] != qemuBinary("amd64") {
 		t.Fatalf("command=%v", installed.Command)
 	}
+	var meta vmInstallMetadata
+	if err := readJSON(filepath.Join(home, "vm", "install.json"), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Checksum != pinnedSHA512 {
+		t.Fatalf("install metadata used downloaded SHA-256 instead of pinned SHA-512: %s", meta.Checksum)
+	}
 	if _, err := provider.installVM(context.Background(), ic, resolved); err != nil {
 		t.Fatalf("matching committed install did not resume: %v", err)
+	}
+}
+
+func TestRepairLegacyDebianVMInstallMetadata(t *testing.T) {
+	home := t.TempDir()
+	vmDir := filepath.Join(home, "vm")
+	if err := os.MkdirAll(vmDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pinnedSHA512 := strings.Repeat("a", 128)
+	legacySHA256 := strings.Repeat("b", 64)
+	image := VMImageSpec{Version: "13", Build: "build", Architecture: "amd64", URL: "https://cloud.debian.org/debian.qcow2", SHA512: pinnedSHA512}
+	spec := ProviderSpec{ID: "vm-debian", Installer: "qemu-vm", VMImages: []VMImageSpec{image}}
+	state := State{Provider: spec.ID, ResolvedVersion: image.Version, ResolvedBuild: image.Build, Artifact: Artifact{
+		URL: image.URL, Version: image.Version, Build: image.Build, SHA256: legacySHA256, SHA512: pinnedSHA512,
+	}}
+	legacy := vmInstallMetadata{Schema: 1, Provider: spec.ID, Version: image.Version, Build: image.Build,
+		Architecture: image.Architecture, Checksum: legacySHA256, DiskGB: 10, Hostname: "pcvm"}
+	if err := writeJSONAtomic(filepath.Join(vmDir, "install.json"), legacy); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := repairLegacyVMInstallMetadata(home, spec, state, "amd64")
+	if err != nil || !repaired {
+		t.Fatalf("repaired=%v err=%v", repaired, err)
+	}
+	var got vmInstallMetadata
+	if err := readJSON(filepath.Join(vmDir, "install.json"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Checksum != pinnedSHA512 || got.DiskGB != legacy.DiskGB || got.Hostname != legacy.Hostname {
+		t.Fatalf("unexpected repaired metadata: %+v", got)
+	}
+
+	legacy.Checksum = legacySHA256
+	if err := writeJSONAtomic(filepath.Join(vmDir, "install.json"), legacy); err != nil {
+		t.Fatal(err)
+	}
+	state.Artifact.SHA512 = strings.Repeat("c", 128)
+	if repaired, err := repairLegacyVMInstallMetadata(home, spec, state, "amd64"); err != nil || repaired {
+		t.Fatalf("untrusted state repaired metadata: repaired=%v err=%v", repaired, err)
+	}
+}
+
+func TestRepairInterruptedLegacyVMStagingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	pinnedSHA512 := strings.Repeat("a", 128)
+	legacySHA256 := strings.Repeat("b", 64)
+	want := vmInstallMetadata{Schema: 1, Provider: "vm-debian", Version: "13", Build: "build",
+		Architecture: "amd64", Checksum: pinnedSHA512, DiskGB: 10, Hostname: "pcvm"}
+	legacy := want
+	legacy.Checksum = legacySHA256
+	path := filepath.Join(dir, "install.json")
+	if err := writeJSONAtomic(path, legacy); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := repairLegacyVMMetadataFile(path, want, legacySHA256)
+	if err != nil || !repaired {
+		t.Fatalf("repaired=%v err=%v", repaired, err)
+	}
+	var got vmInstallMetadata
+	if err := readJSON(path, &got); err != nil || got != want {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+
+	legacy.Hostname = "different"
+	if err := writeJSONAtomic(path, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if repaired, err := repairLegacyVMMetadataFile(path, want, legacySHA256); err != nil || repaired {
+		t.Fatalf("mismatched install was repaired: repaired=%v err=%v", repaired, err)
 	}
 }
 

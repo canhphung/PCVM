@@ -184,7 +184,7 @@ func TestRunStateSyncsAllocationBeforeStart(t *testing.T) {
 	}
 	var output bytes.Buffer
 	control := filepath.Join(home, ".pcvm")
-	app := NewApp(Config{Home: home, Control: control, Arch: "amd64", AllocationPort: 30128, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}, Request: Request{MaxPlayers: 16}}, catalog, bytes.NewReader(nil), &output, &output)
+	app := NewApp(Config{Home: home, Control: control, Arch: "amd64", AllocationPort: 30128, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}, Request: Request{MaxPlayers: 16, AcceptEULA: true}}, catalog, bytes.NewReader(nil), &output, &output)
 	supervisor := &recordingSupervisor{}
 	app.Supervisor = supervisor
 	state := State{Provider: "bedrock", ResolvedVersion: "1.21.0", ResolvedBuild: "release", Architecture: "amd64"}
