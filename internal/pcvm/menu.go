@@ -53,12 +53,12 @@ func (a *App) menu() (string, error) {
 	available := a.Catalog.Available(a.Config.Arch, a.Config.Policy.AllowedSoftware)
 	filtered := available[:0]
 	for _, provider := range available {
-		if a.Config.Policy.AllowSystemPath || a.Catalog.HasRuntime(provider.Runtime, "", a.Config.Arch) {
+		if ImageProfileSupports(a.Config.ImageProfile, provider) && (a.Config.Policy.AllowSystemPath || a.Catalog.HasRuntime(provider.Runtime, "", a.Config.Arch)) {
 			filtered = append(filtered, provider)
 		}
 	}
 	if len(filtered) == 0 {
-		return "", fmt.Errorf("host policy exposes no providers")
+		return "", fmt.Errorf("host policy and %s image profile expose no providers", a.Config.ImageProfile)
 	}
 	root := buildMenuTree(filtered)
 	reader := bufio.NewReader(a.In)

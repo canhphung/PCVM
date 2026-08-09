@@ -1,6 +1,6 @@
 {
   "schema": 4,
-  "version": "1.6.0",
+  "version": "1.7.0",
   "providers": [
     {"id":"vanilla","name":"Minecraft Vanilla","family":"minecraft-java-vanilla","architectures":["amd64","arm64"],"runtime":"java","resolver":"mojang","installer":"jar","ready_patterns":["Done \\(","For help, type"],"stop_command":"stop","requires_eula":true,"menu_path":["java"]},
     {"id":"paper","name":"Paper","family":"minecraft-java-bukkit","architectures":["amd64","arm64"],"runtime":"java","resolver":"papermc","installer":"jar","ready_patterns":["Done \\(","For help, type"],"stop_command":"stop","requires_eula":true,"menu_path":["java"],"options":{"project":"paper"}},

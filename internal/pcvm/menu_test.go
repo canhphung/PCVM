@@ -67,6 +67,22 @@ func TestGroupedMenuHidesEmptyCategoriesAndRetries(t *testing.T) {
 	}
 }
 
+func TestMenuFiltersProvidersByEmbeddedImageProfile(t *testing.T) {
+	app, output := menuTestApp(t, "1\n1\n", map[string]bool{"paper": true, "rust": true, "vm-debian": true})
+	app.Config.ImageProfile = ImageProfileCore
+	selected, err := app.menu()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "paper" {
+		t.Fatalf("selected=%q", selected)
+	}
+	text := output.String()
+	if strings.Contains(text, "Game Servers") || strings.Contains(text, "Virtual Machines") {
+		t.Fatalf("core image exposed unavailable categories:\n%s", text)
+	}
+}
+
 func TestGameMenuUsesThreeLevels(t *testing.T) {
 	app, output := menuTestApp(t, "1\n2\n1\n", map[string]bool{"cs2": true, "rust": true, "factorio": true})
 	selected, err := app.menu()

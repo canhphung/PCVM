@@ -4,9 +4,14 @@
   "exported_at": "2026-08-09T00:00:00+07:00",
   "name": "PCVM",
   "author": "canhphung@users.noreply.github.com",
-  "description": "PCVM v1.6.0: 43 providers including SA-MP/open.mp, Multi Theft Auto and VS Code Server, plus lightweight Linux VMs. No Panel/Wings modifications, KVM, inbound VM ports or arbitrary startup commands.",
+  "description": "PCVM v1.7.0: 43 providers with lightweight Core, Games and VM image profiles plus a backward-compatible Full image. No Panel/Wings modifications, KVM, inbound VM ports or arbitrary startup commands.",
   "features": ["eula"],
-  "docker_images": {"PCVM 1.6.0": "ghcr.io/canhphung/pcvm:1.6.0"},
+  "docker_images": {
+    "PCVM 1.7.0 - Full (43 providers)": "ghcr.io/canhphung/pcvm:1.7.0",
+    "PCVM 1.7.0 - Core (21 providers)": "ghcr.io/canhphung/pcvm:1.7.0-core",
+    "PCVM 1.7.0 - Games (38 providers)": "ghcr.io/canhphung/pcvm:1.7.0-games",
+    "PCVM 1.7.0 - Virtual Machines (26 providers)": "ghcr.io/canhphung/pcvm:1.7.0-vm"
+  },
   "file_denylist": [".pcvm"],
   "startup": "/usr/local/bin/pcvm run",
   "config": {

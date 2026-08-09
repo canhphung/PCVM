@@ -9,6 +9,11 @@ import (
 const (
 	StateSchema   = 3
 	CatalogSchema = 4
+
+	ImageProfileCore  = "core"
+	ImageProfileGames = "games"
+	ImageProfileVM    = "vm"
+	ImageProfileFull  = "full"
 )
 
 type Catalog struct {

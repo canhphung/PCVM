@@ -21,11 +21,15 @@ func TestRunClearsBeforeConfigurationErrors(t *testing.T) {
 	}
 }
 
-func TestVersionAndInvalidSubcommandsDoNotClear(t *testing.T) {
+func TestInformationalAndInvalidSubcommandsDoNotClear(t *testing.T) {
 	t.Setenv("CLEAR_CONSOLE", "1")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"pcvm", "version"}, strings.NewReader(""), &stdout, &stderr); code != 0 || strings.Contains(stdout.String(), "\x1b[2J") {
 		t.Fatalf("version code=%d stdout=%q", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := run([]string{"pcvm", "profile"}, strings.NewReader(""), &stdout, &stderr); code != 0 || strings.TrimSpace(stdout.String()) != imageProfile || strings.Contains(stdout.String(), "\x1b[2J") {
+		t.Fatalf("profile code=%d stdout=%q", code, stdout.String())
 	}
 	stdout.Reset()
 	if code := run([]string{"pcvm", "unknown"}, strings.NewReader(""), &stdout, &stderr); code != 2 || stdout.Len() != 0 {

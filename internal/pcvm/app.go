@@ -72,6 +72,9 @@ func (a *App) Run(ctx context.Context) error {
 	if !contains(spec.Architectures, a.Config.Arch) {
 		return fmt.Errorf("provider %q has no %s artifact", spec.ID, a.Config.Arch)
 	}
+	if err := ValidateProviderImageProfile(a.Config.ImageProfile, spec); err != nil {
+		return err
+	}
 	if err := ValidateProviderRequest(spec, a.Config); err != nil {
 		return err
 	}
@@ -310,6 +313,9 @@ func (a *App) runState(ctx context.Context, state State) error {
 	}
 	if !contains(spec.Architectures, a.Config.Arch) {
 		return fmt.Errorf("provider %q has no %s artifact", spec.ID, a.Config.Arch)
+	}
+	if err := ValidateProviderImageProfile(a.Config.ImageProfile, spec); err != nil {
+		return err
 	}
 	if state.Architecture != "" && state.Architecture != a.Config.Arch {
 		return fmt.Errorf("state architecture %q does not match container architecture %q", state.Architecture, a.Config.Arch)

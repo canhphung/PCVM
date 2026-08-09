@@ -11,7 +11,7 @@ permissions:
   attestations: write
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -20,17 +20,30 @@ jobs:
           go-version: '1.26.x'
           cache: false
       - run: go test -race ./...
+      - name: Verify synchronized SemVer assets and image profiles
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm"
+          test "$(jq -r '.version' internal/pcvm/catalog.json)" = "$version"
+          test "$(jq -r '.docker_images | to_entries[0].key' egg/egg-pcvm.json)" = "PCVM $version - Full (43 providers)"
+          test "$(jq -r '.docker_images | to_entries[0].value' egg/egg-pcvm.json)" = "$image:$version"
+          test "$(jq -r '.docker_images | length' egg/egg-pcvm.json)" = 4
+          for profile in core games vm; do
+            jq -e --arg value "$image:$version-$profile" '.docker_images | to_entries[] | select(.value == $value)' egg/egg-pcvm.json >/dev/null
+          done
+
+  build-full:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - name: Derive release metadata
         run: |
           echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm" >> "$GITHUB_ENV"
-      - name: Verify synchronized SemVer assets
-        run: |
-          test "$(jq -r '.version' internal/pcvm/catalog.json)" = "$VERSION"
-          test "$(jq -r '.docker_images | to_entries[0].key' egg/egg-pcvm.json)" = "PCVM $VERSION"
-          test "$(jq -r '.docker_images | to_entries[0].value' egg/egg-pcvm.json)" = "$IMAGE:$VERSION"
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -45,17 +58,78 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ env.VERSION }}
             ${{ env.IMAGE }}:latest
-          build-args: VERSION=${{ env.VERSION }}
+            ${{ env.IMAGE }}:${{ env.VERSION }}-full
+            ${{ env.IMAGE }}:full
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            PROFILE=full
           sbom: true
           provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=profile-full
+          cache-to: type=gha,mode=max,scope=profile-full
       - uses: sigstore/cosign-installer@v4.1.2
-      - name: Sign multi-arch image by digest
+      - name: Sign full multi-arch image by digest
         run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
-      - name: Render pinned egg and checksums
+
+  build-profiles:
+    needs: test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [core, games, vm]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Derive release metadata
         run: |
-          jq --arg image "${IMAGE}:${VERSION}" --arg label "PCVM ${VERSION}" '.docker_images = {($label): $image} | .exported_at = (now | todateiso8601)' egg/egg-pcvm.json > "egg-pcvm-${VERSION}.json"
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}-${{ matrix.profile }}
+            ${{ env.IMAGE }}:${{ matrix.profile }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            PROFILE=${{ matrix.profile }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=profile-${{ matrix.profile }}
+          cache-to: type=gha,mode=max,scope=profile-${{ matrix.profile }}
+      - uses: sigstore/cosign-installer@v4.1.2
+      - name: Sign profile multi-arch image by digest
+        run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+
+  publish:
+    needs: [test, build-full, build-profiles]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Derive release metadata
+        run: |
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm" >> "$GITHUB_ENV"
+      - name: Render pinned Egg and checksums
+        run: |
+          jq --arg image "$IMAGE" --arg version "$VERSION" '
+            .docker_images = {
+              ("PCVM " + $version + " - Full (43 providers)"): ($image + ":" + $version),
+              ("PCVM " + $version + " - Core (21 providers)"): ($image + ":" + $version + "-core"),
+              ("PCVM " + $version + " - Games (38 providers)"): ($image + ":" + $version + "-games"),
+              ("PCVM " + $version + " - Virtual Machines (26 providers)"): ($image + ":" + $version + "-vm")
+            } | .exported_at = (now | todateiso8601)
+          ' egg/egg-pcvm.json > "egg-pcvm-${VERSION}.json"
           sha256sum "egg-pcvm-${VERSION}.json" runtime-manifest.json > SHA256SUMS
       - uses: softprops/action-gh-release@v3
         with:

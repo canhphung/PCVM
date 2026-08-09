@@ -10,7 +10,10 @@ import (
 	"github.com/canhphung/PCVM/internal/pcvm"
 )
 
-var version = "dev"
+var (
+	version      = "dev"
+	imageProfile = pcvm.ImageProfileFull
+)
 
 func main() {
 	os.Exit(run(os.Args, os.Stdin, os.Stdout, os.Stderr))
@@ -21,14 +24,22 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 		fmt.Fprintln(out, version)
 		return 0
 	}
+	if len(args) > 1 && args[1] == "profile" {
+		fmt.Fprintln(out, imageProfile)
+		return 0
+	}
 	if len(args) > 1 && args[1] != "run" {
-		fmt.Fprintln(errOut, "usage: pcvm [run|version]")
+		fmt.Fprintln(errOut, "usage: pcvm [run|version|profile]")
 		return 2
 	}
 	if err := pcvm.ClearConsole(out, envBool("CLEAR_CONSOLE", true)); err != nil {
 		return fatal(errOut, err)
 	}
 	cfg, err := pcvm.ConfigFromEnv()
+	if err != nil {
+		return fatal(errOut, err)
+	}
+	cfg.ImageProfile, err = pcvm.NormalizeImageProfile(imageProfile)
 	if err != nil {
 		return fatal(errOut, err)
 	}
@@ -45,7 +56,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 		return fatal(errOut, err)
 	}
 	app := pcvm.NewApp(cfg, catalog, in, out, errOut)
-	app.Log.Printf("PCVM %s (%s)", version, cfg.Arch)
+	app.Log.Printf("PCVM %s (%s, %s profile)", version, cfg.Arch, cfg.ImageProfile)
 	if err = app.Run(context.Background()); err != nil {
 		return fatal(errOut, err)
 	}

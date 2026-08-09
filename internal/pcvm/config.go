@@ -14,6 +14,7 @@ type Config struct {
 	Home           string
 	Control        string
 	Arch           string
+	ImageProfile   string
 	AllocationPort int
 	Request        Request
 	Policy         Policy
@@ -91,7 +92,7 @@ func ConfigFromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("SERVER_PORT must be an integer between 1 and 65535")
 		}
 	}
-	return Config{Home: home, Control: filepath.Join(home, ".pcvm"), Arch: arch, AllocationPort: allocationPort, Request: request, Policy: policy}, nil
+	return Config{Home: home, Control: filepath.Join(home, ".pcvm"), Arch: arch, ImageProfile: ImageProfileFull, AllocationPort: allocationPort, Request: request, Policy: policy}, nil
 }
 
 func envDefault(key, fallback string) string {

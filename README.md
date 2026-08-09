@@ -1,6 +1,6 @@
 # PCVM
 
-PCVM v1.6.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 43 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
+PCVM v1.7.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 43 providers without modifying Panel or Wings. Four capability-aware Docker image profiles let hosts avoid shipping QEMU and native game libraries to servers that do not use them. The Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
 ## Provider catalog
 
@@ -23,10 +23,21 @@ All game providers are AMD64-only. `samp` installs the actively maintained open.
 
 ## Install on Pterodactyl
 
-1. Download `egg-pcvm-1.6.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+1. Download `egg-pcvm-1.7.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
 2. Import it into a Nest on Pterodactyl 1.12.x.
-3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.6.0` image.
+3. Keep the default release-pinned Full image, or select a smaller profile from the Egg's Docker image list.
 4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
+
+### Docker image profiles
+
+| Profile | Release tag | Provider capability | Catalog count |
+|---|---|---|---:|
+| Full | `ghcr.io/canhphung/pcvm:1.7.0` | Core + Games + Virtual Machines | 43 |
+| Core | `ghcr.io/canhphung/pcvm:1.7.0-core` | Minecraft, proxies, Bedrock, web and applications | 21 |
+| Games | `ghcr.io/canhphung/pcvm:1.7.0-games` | Core + native game servers | 38 |
+| Virtual Machines | `ghcr.io/canhphung/pcvm:1.7.0-vm` | Core + QEMU virtual machines | 26 |
+
+The Full image remains first and is the backward-compatible default. Provider counts describe profile capabilities before architecture filtering; all native game providers remain unavailable on ARM64. The image profile is compiled into the launcher and cannot be changed with a Startup Variable. Interactive menus hide providers that the selected image cannot run, while direct selection and existing state fail safely with an instruction to select the required image. Changing the Docker image profile does not reset or migrate server data.
 
 The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable startup command is:
 
@@ -34,7 +45,7 @@ The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable 
 /usr/local/bin/pcvm run
 ```
 
-On first start, `SOFTWARE=interactive` opens a FIGlet menu with up to three levels. Host allowlists, architecture and runtime availability filter the choices. PCVM emits `[PCVM] READY` only after provider-specific regex, delay or TCP readiness succeeds.
+On first start, `SOFTWARE=interactive` opens a FIGlet menu with up to three levels. Host allowlists, image capability, architecture and runtime availability filter the choices. PCVM emits `[PCVM] READY` only after provider-specific regex, delay or TCP readiness succeeds.
 
 `pcvm run` clears the visible terminal screen and scrollback before its first banner. Set the admin-only `CLEAR_CONSOLE=0` while debugging. This does not delete Wings logs, audit history or server files; `pcvm version` and other non-run commands never clear the terminal.
 
@@ -99,7 +110,7 @@ VM image updates never modify an existing disk. Changing distro, version, pinned
 
 ## Runtimes and downloads
 
-The Debian slim image contains Nginx, Apache, Git, CA certificates, archive/native build tools, QEMU system emulation, `qemu-img`, ISO tooling, OpenSSL, UEFI firmware and common native game libraries. AMD64 additionally contains the i386 libraries required by SteamCMD and Source-family servers. Game binaries, Wine and Proton are not built into the image.
+Every Debian slim profile contains Nginx, Apache, Git, CA certificates, OpenSSL, archive tools and the native build toolchain used by application providers. The Games and Full profiles add common native game libraries; on AMD64 they also add the i386 libraries required by SteamCMD and Source-family servers. The Virtual Machines and Full profiles add QEMU system emulation, `qemu-img`, ISO tooling and architecture-specific UEFI firmware. Game binaries, cloud images, Wine and Proton are never built into an image.
 
 `runtime-manifest.json` contains 27 architecture-specific, SHA-256-pinned packs:
 
@@ -132,8 +143,11 @@ go test -race ./...
 go vet ./...
 go run ./cmd/runtime-manifest -out runtime-manifest.json
 docker build -t pcvm:dev .
+docker build --build-arg PROFILE=core -t pcvm:core-dev .
+docker build --build-arg PROFILE=games -t pcvm:games-dev .
+docker build --build-arg PROFILE=vm -t pcvm:vm-dev .
 ```
 
-Pull requests use local HTTP fixtures, a SteamCMD shim, fake QEMU/QMP and fake control servers. CI cross-compiles AMD64/ARM64, checks QEMU/firmware as non-root with a read-only container root, tests web static/proxy modes and builds the multi-architecture image with SBOM and provenance. Nightly checks live resolvers, runtime metadata, Steam App IDs and pinned cloud-image URLs without downloading full games. Manual `full-game-smoke` and `full-vm-smoke` workflows run one selected real provider per invocation.
+Pull requests use local HTTP fixtures, a SteamCMD shim, fake QEMU/QMP and fake control servers. CI cross-compiles AMD64/ARM64, verifies the embedded profile and package boundaries, checks QEMU/firmware as non-root with a read-only container root, tests web static/proxy modes on Core and builds all four multi-architecture profiles with SBOM and provenance. Nightly checks live resolvers, runtime metadata, Steam App IDs and pinned cloud-image URLs without downloading full games. Manual application, game and VM smoke workflows build the matching lightweight profile and run one selected real provider per invocation.
 
-Tags matching `v*.*.*` publish a version-pinned Egg and image, checksums, provenance and a keyless Cosign signature.
+Tags matching `v*.*.*` publish one version-pinned Egg, all four multi-architecture image profiles, checksums, provenance and a keyless Cosign signature for every image digest. Full additionally receives the unsuffixed version and `latest` tags for backward compatibility.
