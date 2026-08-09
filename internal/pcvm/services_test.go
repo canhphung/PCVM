@@ -39,6 +39,92 @@ func TestProviderPortRequirements(t *testing.T) {
 	if err := ValidateProviderRequest(catalogSpec(t, "unturned"), cfg); err == nil {
 		t.Fatal("duplicate primary/query port was accepted")
 	}
+	cfg.AllocationPort, cfg.Request.QueryPort = 22003, 22126
+	if err := ValidateProviderRequest(catalogSpec(t, "mtasa"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Request.QueryPort = 22125
+	if err := ValidateProviderRequest(catalogSpec(t, "mtasa"), cfg); err == nil || !strings.Contains(err.Error(), "expected 22126") {
+		t.Fatalf("wrong MTA query offset error: %v", err)
+	}
+}
+
+func TestGTAProviderConfigsUseManagedAllocation(t *testing.T) {
+	home := t.TempDir()
+	openmp := filepath.Join(home, "openmp")
+	if err := os.MkdirAll(openmp, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(openmp, "config.json"), []byte(`{"name":"old","max_players":50,"network":{"bind":"","port":7777},"artwork":{"enable":true},"rcon":{"enable":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 7778,
+		Request: Request{ServerName: `PCVM & Friends`, ServerPassword: `p<ass`, MaxPlayers: 64, QueryPort: 7901}}
+	if err := configureOpenMP(openmp, cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(openmp, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"name": "PCVM \u0026 Friends"`, `"port": 7778`, `"max_players": 64`, `"enable": false`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("open.mp config missing %q: %s", want, data)
+		}
+	}
+	mta := filepath.Join(home, "mtasa")
+	configDir := filepath.Join(mta, "mods", "deathmatch")
+	if err := os.MkdirAll(configDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	template := `<config><servername>Old</servername><serverip>auto</serverip><serverport>22003</serverport><maxplayers>32</maxplayers><httpport>22005</httpport><ase>0</ase><password></password></config>`
+	if err := os.WriteFile(filepath.Join(configDir, "mtaserver.conf"), []byte(template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureMTA(mta, cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(filepath.Join(configDir, "mtaserver.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<servername>PCVM &amp; Friends</servername>", "<serverport>7778</serverport>", "<httpport>7778</httpport>", "<ase>1</ase>"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("MTA config missing %q: %s", want, data)
+		}
+	}
+}
+
+func TestCodeServerProcessUsesPrimaryPortAndPersistentPassword(t *testing.T) {
+	home := t.TempDir()
+	control := filepath.Join(home, ".pcvm")
+	binary := filepath.Join(home, "code-server")
+	if err := os.WriteFile(binary, []byte("fixture"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Home: home, Control: control, AllocationPort: 8080, Request: Request{CodeServerPassword: "correct-horse-battery"}}
+	process, err := NewProvider(catalogSpec(t, "code-server")).BuildProcess(context.Background(), cfg, LaunchState{Command: []string{binary}, WorkingDirectory: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(process.Command, " ")
+	if !strings.Contains(joined, "--bind-addr 0.0.0.0:8080") || !strings.Contains(joined, "--auth password") || !strings.Contains(joined, filepath.Join(control, "code-server", "config.yaml")) || process.Readiness.PortVariable != "8080" {
+		t.Fatalf("process=%+v", process)
+	}
+	password, err := os.ReadFile(filepath.Join(home, "code-server-password.txt"))
+	if err != nil || strings.TrimSpace(string(password)) != cfg.Request.CodeServerPassword {
+		t.Fatalf("password file=%q err=%v", password, err)
+	}
+	if strings.Contains(joined, cfg.Request.CodeServerPassword) {
+		t.Fatal("password leaked into argv")
+	}
+}
+
+func TestCodeServerPasswordValidation(t *testing.T) {
+	cfg := Config{Home: t.TempDir(), AllocationPort: 8080, Request: Request{CodeServerPassword: "short"}}
+	if err := ValidateProviderRequest(catalogSpec(t, "code-server"), cfg); err == nil {
+		t.Fatal("short code-server password was accepted")
+	}
 }
 
 func TestWebRequestSafety(t *testing.T) {
@@ -263,7 +349,7 @@ func TestNewProviderCatalogContracts(t *testing.T) {
 		"rust-umod": "258550", "project-zomboid": "380870", "valheim": "896660", "valheim-bepinex": "896660",
 		"7dtd": "294420", "unturned": "1110390", "satisfactory": "1690800",
 	}
-	newProviders := []string{"nginx", "apache", "caddy", "cs2", "gmod", "l4d2", "palworld", "rust", "rust-umod", "project-zomboid", "valheim", "valheim-bepinex", "7dtd", "unturned", "terraria", "tmodloader", "satisfactory", "factorio", "powernukkitx", "cloudburst-nukkit", "endstone"}
+	newProviders := []string{"nginx", "apache", "caddy", "cs2", "gmod", "l4d2", "samp", "mtasa", "palworld", "rust", "rust-umod", "project-zomboid", "valheim", "valheim-bepinex", "7dtd", "unturned", "terraria", "tmodloader", "satisfactory", "factorio", "powernukkitx", "cloudburst-nukkit", "endstone", "code-server"}
 	for _, id := range newProviders {
 		spec := catalogSpec(t, id)
 		if len(spec.MenuPath) == 0 || len(spec.Architectures) == 0 || spec.Readiness.Mode == "" || spec.Control.Mode == "" {

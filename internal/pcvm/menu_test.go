@@ -84,6 +84,22 @@ func TestGameMenuUsesThreeLevels(t *testing.T) {
 	}
 }
 
+func TestGameMenuOffersGTAMultiplayer(t *testing.T) {
+	app, output := menuTestApp(t, "1\n1\n1\n", map[string]bool{"samp": true, "mtasa": true})
+	selected, err := app.menu()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "mtasa" {
+		t.Fatalf("selected=%q, want alphabetically first MTA provider", selected)
+	}
+	for _, want := range []string{"Game Servers", "GTA Multiplayer", "SA-MP / open.mp", "Selected: Multi Theft Auto [mtasa]"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("GTA menu missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
 func TestVMMenuUsesThreeLevels(t *testing.T) {
 	app, output := menuTestApp(t, "1\n2\n1\n", map[string]bool{"vm-ubuntu": true, "vm-debian": true, "vm-rocky": true})
 	selected, err := app.menu()

@@ -17,10 +17,10 @@ LABEL org.opencontainers.image.source="https://github.com/canhphung/PCVM" \
 RUN if [ "$TARGETARCH" = "amd64" ]; then dpkg --add-architecture i386; fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-       apache2 build-essential ca-certificates git libatomic1 libcurl4 libicu72 libpulse0 libsqlite3-0 libssl3 libunwind8 \
+       apache2 build-essential ca-certificates git libatomic1 libcurl4 libicu72 libncursesw6 libpulse0 libsqlite3-0 libssl3 libunwind8 zlib1g \
        genisoimage nginx-light openssl qemu-utils tini unzip xz-utils zstd \
     && if [ "$TARGETARCH" = "amd64" ]; then \
-         apt-get install -y --no-install-recommends libc6:i386 lib32gcc-s1 lib32stdc++6 ovmf qemu-system-x86; \
+         apt-get install -y --no-install-recommends libc6:i386 libatomic1:i386 lib32gcc-s1 lib32stdc++6 ovmf qemu-system-x86; \
        else \
          apt-get install -y --no-install-recommends qemu-efi-aarch64 qemu-system-arm; \
        fi \

@@ -122,6 +122,56 @@ func TestBedrockExtensionResolverFixtures(t *testing.T) {
 	})
 }
 
+func TestOpenMPAndCodeServerResolverFixtures(t *testing.T) {
+	tests := []struct {
+		name, provider, endpoint, tag, asset, wantSHA string
+		request                                       Request
+	}{
+		{
+			name: "openmp", provider: "samp", endpoint: "https://api.github.com/repos/openmultiplayer/open.mp/releases/latest",
+			tag: "v1.5.8.3079", asset: "open.mp-linux-x86.tar.gz", wantSHA: strings.Repeat("a", 64),
+			request: Request{Version: "latest", Build: "latest", Architecture: "amd64"},
+		},
+		{
+			name: "code-server-amd64", provider: "code-server", endpoint: "https://api.github.com/repos/coder/code-server/releases/latest",
+			tag: "v4.131.0", asset: "code-server-4.131.0-linux-amd64.tar.gz", wantSHA: strings.Repeat("b", 64),
+			request: Request{Version: "latest", Build: "latest", Architecture: "amd64"},
+		},
+		{
+			name: "code-server-arm64", provider: "code-server", endpoint: "https://api.github.com/repos/coder/code-server/releases/latest",
+			tag: "v4.131.0", asset: "code-server-4.131.0-linux-arm64.tar.gz", wantSHA: strings.Repeat("c", 64),
+			request: Request{Version: "latest", Build: "latest", Architecture: "arm64"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := `{"tag_name":"` + test.tag + `","assets":[{"name":"` + test.asset + `","browser_download_url":"https://github.com/example/` + test.asset + `","digest":"sha256:` + test.wantSHA + `"}]}`
+			h := NewHTTPClient()
+			h.Client = &http.Client{Transport: fixtureTransport{test.endpoint: fixture}}
+			resolved, err := NewProvider(catalogSpec(t, test.provider)).Resolve(context.Background(), test.request, h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.Artifact.Version != test.tag || resolved.Artifact.FileName != test.asset || resolved.Artifact.SHA256 != test.wantSHA {
+				t.Fatalf("artifact=%+v", resolved.Artifact)
+			}
+		})
+	}
+}
+
+func TestMTAResolverUsesPinnedBundleIdentity(t *testing.T) {
+	resolved, err := NewProvider(catalogSpec(t, "mtasa")).Resolve(context.Background(), Request{Version: "latest", Build: "latest", Architecture: "amd64"}, NewHTTPClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Artifact.Version != "1.6.0" || resolved.Artifact.Build != "23312" || len(resolved.Artifact.SHA256) != 64 {
+		t.Fatalf("artifact=%+v", resolved.Artifact)
+	}
+	if _, err := NewProvider(catalogSpec(t, "mtasa")).Resolve(context.Background(), Request{Version: "9.9.9", Architecture: "amd64"}, NewHTTPClient()); err == nil {
+		t.Fatal("unpinned MTA version was accepted")
+	}
+}
+
 func TestBedrockJavaProcessArguments(t *testing.T) {
 	state := LaunchState{Command: []string{"java", "-jar", "server.jar"}, WorkingDirectory: "/home/container"}
 	cfg := Config{AllocationPort: 19140, Request: Request{ServerName: "PCVM Bedrock"}}

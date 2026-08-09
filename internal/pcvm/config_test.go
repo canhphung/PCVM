@@ -42,7 +42,7 @@ func TestConfigReadsVMCompressionAndAllowsAlpineByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Request.VMDiskCompression != "zstd" || !cfg.Policy.AllowedSoftware["vm-alpine"] {
+	if cfg.Request.VMDiskCompression != "zstd" || !cfg.Policy.AllowedSoftware["vm-alpine"] || !cfg.Policy.AllowedSoftware["samp"] || !cfg.Policy.AllowedSoftware["mtasa"] || !cfg.Policy.AllowedSoftware["code-server"] {
 		t.Fatalf("unexpected VM config: compression=%q alpine=%v", cfg.Request.VMDiskCompression, cfg.Policy.AllowedSoftware["vm-alpine"])
 	}
 }

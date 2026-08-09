@@ -32,8 +32,8 @@ jobs:
           go run ./cmd/pcvm version
           jq -e '.meta.version == "PTDL_v2" and .startup == "/usr/local/bin/pcvm run"' egg/egg-pcvm.json
           jq -e 'length == 27 and all(.[]; (.sha256 | length) == 64)' runtime-manifest.json
-          jq -e '.schema == 4 and .version == "1.5.0" and (.providers | length) == 40 and ([.providers[].vm_images[]?] | length) == 24 and ([.providers[].vm_images[]? | select(.deprecated != true)] | length) == 20 and ([.providers[].vm_images[]? | select(.deprecated == true)] | length) == 4' internal/pcvm/catalog.json
-          jq -e '.docker_images == {"PCVM 1.5.0":"ghcr.io/canhphung/pcvm:1.5.0"}' egg/egg-pcvm.json
+          jq -e '.schema == 4 and .version == "1.6.0" and (.providers | length) == 43 and ([.providers[].vm_images[]?] | length) == 24 and ([.providers[].vm_images[]? | select(.deprecated != true)] | length) == 20 and ([.providers[].vm_images[]? | select(.deprecated == true)] | length) == 4' internal/pcvm/catalog.json
+          jq -e '.docker_images == {"PCVM 1.6.0":"ghcr.io/canhphung/pcvm:1.6.0"}' egg/egg-pcvm.json
           jq -e '.file_denylist == [".pcvm"]' egg/egg-pcvm.json
           jq -e '.features == ["eula"] and ([.variables[].env_variable] | index("ACCEPT_MINECRAFT_EULA") | not)' egg/egg-pcvm.json
       - name: Cross-compile launcher
@@ -88,7 +88,7 @@ jobs:
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - name: Build architecture image
-        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.5.0 -t "pcvm:web-${ARCH}" .
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.6.0 -t "pcvm:web-${ARCH}" .
         env:
           ARCH: ${{ matrix.arch }}
       - name: Test static mode and private-upstream rejection

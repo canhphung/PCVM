@@ -28,7 +28,7 @@ func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state La
 	if p.spec.Installer == "qemu-vm" {
 		return p.buildVMProcess(cfg, state)
 	}
-	if p.spec.Installer == "web" || len(p.spec.MenuPath) > 0 && p.spec.MenuPath[0] == "games" {
+	if p.spec.Installer == "web" || p.spec.Installer == "code-server" || len(p.spec.MenuPath) > 0 && p.spec.MenuPath[0] == "games" {
 		return p.buildServiceProcess(ctx, cfg, state)
 	}
 	readiness := p.spec.Readiness
@@ -87,6 +87,15 @@ func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPC
 		artifact, err = resolveGitHub(ctx, req, httpc, "pmmp/PocketMine-MP", `(?i)\.phar$`)
 	case "github-release":
 		artifact, err = resolveGitHub(ctx, req, httpc, p.spec.Options["repository"], p.spec.Options["asset_regex"])
+	case "github-release-arch":
+		pattern := p.spec.Options["asset_regex_"+req.Architecture]
+		if pattern == "" {
+			err = fmt.Errorf("provider %q has no %s release artifact", p.spec.ID, req.Architecture)
+		} else {
+			artifact, err = resolveGitHub(ctx, req, httpc, p.spec.Options["repository"], pattern)
+		}
+	case "mta-pinned":
+		artifact, err = resolvePinnedMTA(req, p.spec.Options)
 	case "local-app":
 		artifact = Artifact{Kind: "source", Version: req.Version, Build: req.Build}
 	case "local-service":
@@ -104,6 +113,9 @@ func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPC
 	}
 	if err != nil {
 		return Resolved{}, err
+	}
+	if (p.spec.Installer == "openmp" || p.spec.Installer == "code-server") && !validHexDigest(artifact.SHA256, 64) {
+		return Resolved{}, fmt.Errorf("%s release asset has no upstream SHA-256 digest", p.spec.Name)
 	}
 	runtimeVersion := req.RuntimeVersion
 	if runtimeVersion == "" || runtimeVersion == "auto" {
@@ -641,6 +653,23 @@ func resolveGitHub(ctx context.Context, req Request, h *HTTPClient, repo, assetP
 	return Artifact{}, fmt.Errorf("release contains no matching artifact")
 }
 
+func resolvePinnedMTA(req Request, options map[string]string) (Artifact, error) {
+	version, build := options["version"], options["build"]
+	if version == "" || build == "" || options["main_url"] == "" || !validHexDigest(options["main_sha256"], 64) {
+		return Artifact{}, fmt.Errorf("MTA catalog entry is incomplete")
+	}
+	if req.Version != "" && req.Version != "latest" && req.Version != version {
+		return Artifact{}, fmt.Errorf("MTA version %q is not pinned by this PCVM release", req.Version)
+	}
+	if req.Build != "" && req.Build != "latest" && req.Build != build {
+		return Artifact{}, fmt.Errorf("MTA build %q is not pinned by this PCVM release", req.Build)
+	}
+	return Artifact{
+		URL: options["main_url"], FileName: "multitheftauto-linux-" + version + "-" + build + ".tar.gz",
+		Kind: "tar.gz", SHA256: options["main_sha256"], Version: version, Build: build,
+	}, nil
+}
+
 func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
 	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
 	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
@@ -723,6 +752,12 @@ func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolv
 		return p.installTModLoader(ic, resolved)
 	case "endstone":
 		return p.installEndstone(ctx, ic, resolved)
+	case "openmp":
+		return p.installOpenMP(ic, resolved)
+	case "mtasa":
+		return p.installMTA(ctx, ic, resolved)
+	case "code-server":
+		return p.installCodeServer(ic, resolved)
 	case "qemu-vm":
 		return p.installVM(ctx, ic, resolved)
 	default:

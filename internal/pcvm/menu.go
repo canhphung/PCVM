@@ -28,10 +28,11 @@ var menuCategories = map[string]menuCategory{
 	"bedrock":           {ID: "bedrock", Name: "Minecraft Bedrock", Description: "Official BDS, Nukkit-family and plugin platforms"},
 	"games":             {ID: "games", Name: "Game Servers", Description: "Native Linux dedicated game servers"},
 	"source":            {ID: "source", Name: "Source & FPS", Description: "Counter-Strike, Garry's Mod and Left 4 Dead"},
+	"gta":               {ID: "gta", Name: "GTA Multiplayer", Description: "SA-MP/open.mp and Multi Theft Auto"},
 	"survival":          {ID: "survival", Name: "Survival", Description: "Persistent survival and co-op worlds"},
 	"sandbox":           {ID: "sandbox", Name: "Sandbox & Automation", Description: "Building, automation and sandbox games"},
 	"web":               {ID: "web", Name: "Web Servers", Description: "Static hosting and reverse proxies"},
-	"apps":              {ID: "apps", Name: "Applications & Bots", Description: "Node.js, Python and Lavalink"},
+	"apps":              {ID: "apps", Name: "Applications & Bots", Description: "Node.js, Python, Lavalink and browser IDEs"},
 	"vms":               {ID: "vms", Name: "Virtual Machines", Description: "Real Linux VMs using unprivileged QEMU TCG"},
 	"debian-family":     {ID: "debian-family", Name: "Debian Family", Description: "Ubuntu Server and Debian cloud images"},
 	"enterprise-linux":  {ID: "enterprise-linux", Name: "Enterprise Linux", Description: "AlmaLinux and Rocky Linux cloud images"},
@@ -39,7 +40,7 @@ var menuCategories = map[string]menuCategory{
 }
 
 var menuRootOrder = []string{"java", "proxy", "bedrock", "games", "vms", "web", "apps"}
-var menuGameOrder = []string{"source", "survival", "sandbox"}
+var menuGameOrder = []string{"source", "gta", "survival", "sandbox"}
 var menuVMOrder = []string{"lightweight-linux", "debian-family", "enterprise-linux"}
 
 type menuNode struct {

@@ -37,7 +37,7 @@ func ConfigFromEnv() (Config, error) {
 		}
 		limit = parsed
 	}
-	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,fabric,forge,neoforge,velocity,bungeecord,bedrock,pocketmine,powernukkitx,cloudburst-nukkit,endstone,cs2,gmod,l4d2,palworld,rust,rust-umod,project-zomboid,valheim,valheim-bepinex,7dtd,unturned,terraria,tmodloader,satisfactory,factorio,nginx,apache,caddy,node-bot,python-bot,lavalink,vm-ubuntu,vm-debian,vm-almalinux,vm-rocky,vm-alpine"))
+	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,fabric,forge,neoforge,velocity,bungeecord,bedrock,pocketmine,powernukkitx,cloudburst-nukkit,endstone,cs2,gmod,l4d2,samp,mtasa,palworld,rust,rust-umod,project-zomboid,valheim,valheim-bepinex,7dtd,unturned,terraria,tmodloader,satisfactory,factorio,nginx,apache,caddy,node-bot,python-bot,lavalink,code-server,vm-ubuntu,vm-debian,vm-almalinux,vm-rocky,vm-alpine"))
 	gitHosts := csvSet(envDefault("GIT_ALLOWED_HOSTS", "github.com,gitlab.com,codeberg.org"))
 	request := Request{
 		Software: envDefault("SOFTWARE", "interactive"), Version: envDefault("SOFTWARE_VERSION", "latest"),
@@ -47,7 +47,8 @@ func ConfigFromEnv() (Config, error) {
 		SourceMode: envDefault("SOURCE_MODE", "upload"), GitURL: os.Getenv("GIT_URL"),
 		GitBranch: envDefault("GIT_BRANCH", "main"), EntryFile: os.Getenv("ENTRY_FILE"),
 		AppArgs: os.Getenv("APP_ARGS"), AppReady: os.Getenv("APP_READY_PATTERN"),
-		ServerName: envDefault("SERVER_NAME", "PCVM Server"), ServerPassword: os.Getenv("SERVER_PASSWORD"),
+		CodeServerPassword: os.Getenv("CODE_SERVER_PASSWORD"),
+		ServerName:         envDefault("SERVER_NAME", "PCVM Server"), ServerPassword: os.Getenv("SERVER_PASSWORD"),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"), MaxPlayers: envInt("MAX_PLAYERS", 16),
 		GameMap: os.Getenv("GAME_MAP"), GameWorld: envDefault("GAME_WORLD", "Dedicated"),
 		GameSeed: os.Getenv("GAME_SEED"), GameExtraArgs: os.Getenv("GAME_EXTRA_ARGS"), SteamGSLT: os.Getenv("STEAM_GSLT"),

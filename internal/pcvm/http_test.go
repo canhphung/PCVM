@@ -57,6 +57,11 @@ func TestDownloadSHA512(t *testing.T) {
 
 func TestHTTPSAllowlist(t *testing.T) {
 	h := NewHTTPClient()
+	for _, raw := range []string{"https://linux.multitheftauto.com/dl/baseconfig.tar.gz", "https://mirror.multitheftauto.com/mtasa/resources/mtasa-resources-latest.zip", "https://mirror-cdn.multitheftauto.com/file.tar.gz"} {
+		if err := h.validate(raw); err != nil {
+			t.Fatalf("rejected official MTA host %q: %v", raw, err)
+		}
+	}
 	for _, raw := range []string{"http://github.com/a", "https://user:pass@github.com/a", "https://not-allowed.invalid/a"} {
 		if err := h.validate(raw); err == nil {
 			t.Fatalf("accepted %q", raw)

@@ -109,6 +109,39 @@ func (c Catalog) Validate() error {
 				return fmt.Errorf("provider %q has invalid Steam metadata", p.ID)
 			}
 		}
+		if p.Resolver == "github-release-arch" {
+			if p.Options["repository"] == "" {
+				return fmt.Errorf("provider %q lacks a GitHub repository", p.ID)
+			}
+			for _, arch := range p.Architectures {
+				pattern := p.Options["asset_regex_"+arch]
+				if pattern == "" {
+					return fmt.Errorf("provider %q lacks a %s asset pattern", p.ID, arch)
+				}
+				if _, err := regexp.Compile(pattern); err != nil {
+					return fmt.Errorf("provider %q has invalid %s asset pattern", p.ID, arch)
+				}
+			}
+		}
+		if p.Resolver == "mta-pinned" {
+			if p.Installer != "mtasa" || p.Options["version"] == "" || p.Options["build"] == "" {
+				return fmt.Errorf("provider %q has incomplete MTA metadata", p.ID)
+			}
+			for _, artifact := range []string{"main", "base", "resources"} {
+				u, err := url.Parse(p.Options[artifact+"_url"])
+				if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || u.RawQuery != "" || u.Fragment != "" || !validHexDigest(p.Options[artifact+"_sha256"], 64) {
+					return fmt.Errorf("provider %q has invalid pinned MTA %s artifact", p.ID, artifact)
+				}
+				switch strings.ToLower(u.Hostname()) {
+				case "linux.multitheftauto.com", "mirror.multitheftauto.com", "mirror-cdn.multitheftauto.com":
+				default:
+					return fmt.Errorf("provider %q has unapproved MTA %s host", p.ID, artifact)
+				}
+			}
+		}
+		if p.Installer == "openmp" && (p.Resolver != "github-release" || len(p.Architectures) != 1 || p.Architectures[0] != "amd64") {
+			return fmt.Errorf("provider %q has invalid open.mp metadata", p.ID)
+		}
 		if p.Installer == "qemu-vm" {
 			if p.Resolver != "vm-image" || p.Runtime != "native" || len(p.VMImages) < 4 {
 				return fmt.Errorf("provider %q has incomplete VM metadata", p.ID)
@@ -206,7 +239,7 @@ func validMenuPath(path []string) bool {
 	}
 	if len(path) == 2 && path[0] == "games" {
 		switch path[1] {
-		case "source", "survival", "sandbox":
+		case "source", "gta", "survival", "sandbox":
 			return true
 		}
 	}

@@ -1,0 +1,43 @@
+name: Full application smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: Native runner architecture
+        required: true
+        type: choice
+        options: [amd64, arm64]
+
+permissions:
+  contents: read
+
+jobs:
+  code-server:
+    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build native PCVM image
+        run: docker build --build-arg VERSION=1.6.0 -t pcvm:full-app-smoke .
+      - name: Install code-server, authenticate and stop safely
+        run: |
+          set -euo pipefail
+          data=$(mktemp -d)
+          cleanup() { docker rm -f pcvm-full-app >/dev/null 2>&1 || true; rm -rf "$data"; }
+          trap cleanup EXIT
+          chmod 0777 "$data"
+          docker run -d --name pcvm-full-app -p 0:8080 -v "$data:/home/container" \
+            -e SOFTWARE=code-server -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 \
+            -e CODE_SERVER_PASSWORD=pcvm-code-server-smoke pcvm:full-app-smoke
+          for _ in $(seq 1 300); do
+            docker logs pcvm-full-app 2>&1 | grep -Fq '[PCVM] READY' && break
+            test "$(docker inspect -f '{{.State.Running}}' pcvm-full-app)" = true
+            sleep 1
+          done
+          docker logs pcvm-full-app 2>&1 | grep -Fq '[PCVM] READY'
+          test "$(docker exec pcvm-full-app cat /home/container/code-server-password.txt)" = pcvm-code-server-smoke
+          host_port=$(docker inspect -f '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' pcvm-full-app)
+          curl --fail --silent --show-error "http://127.0.0.1:${host_port}/" >/dev/null
+          docker stop --time 40 pcvm-full-app
+          test "$(docker inspect -f '{{.State.Running}}' pcvm-full-app)" = false

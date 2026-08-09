@@ -41,6 +41,25 @@ jobs:
           for appid in 730 4020 222860 2394010 258550 380870 896660 294420 1110390 1690800; do
             grep -Fq "\"${appid}\"" /tmp/steam-apps.log
           done
+      - name: Verify pinned Multi Theft Auto bundles
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, pathlib, urllib.request
+
+          catalog = json.loads(pathlib.Path("internal/pcvm/catalog.json").read_text())
+          provider = next(item for item in catalog["providers"] if item["id"] == "mtasa")
+          options = provider["options"]
+          for name in ("main", "base", "resources"):
+              request = urllib.request.Request(options[f"{name}_url"], headers={"User-Agent": "PCVM nightly"})
+              digest = hashlib.sha256()
+              with urllib.request.urlopen(request, timeout=180) as response:
+                  while chunk := response.read(1024 * 1024):
+                      digest.update(chunk)
+              if digest.hexdigest() != options[f"{name}_sha256"]:
+                  raise SystemExit(f"MTA {name} checksum changed upstream; refresh the pinned catalog")
+          print("verified all pinned MTA bundles")
+          PY
       - name: Verify immutable VM URLs and official checksum manifests
         run: |
           set -euo pipefail

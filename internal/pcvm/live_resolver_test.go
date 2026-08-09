@@ -4,6 +4,7 @@ package pcvm
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -23,7 +24,7 @@ func TestLiveResolvers(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			httpc := NewHTTPClient()
-			resolved, err := NewProvider(spec).Resolve(ctx, Request{Version: "latest", Build: "latest", RuntimeVersion: "auto"}, httpc)
+			resolved, err := NewProvider(spec).Resolve(ctx, Request{Version: "latest", Build: "latest", RuntimeVersion: "auto", Architecture: runtime.GOARCH}, httpc)
 			if err != nil {
 				t.Fatal(err)
 			}

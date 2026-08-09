@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,8 +32,14 @@ func ValidateProviderRequest(spec ProviderSpec, cfg Config) error {
 	if isGame && (cfg.Request.MaxPlayers < 1 || cfg.Request.MaxPlayers > 512) {
 		return fmt.Errorf("MAX_PLAYERS must be between 1 and 512")
 	}
-	if (isGame || spec.Installer == "web") && (cfg.AllocationPort < 1 || cfg.AllocationPort > 65535) {
+	if (isGame || spec.Installer == "web" || spec.Installer == "code-server") && (cfg.AllocationPort < 1 || cfg.AllocationPort > 65535) {
 		return fmt.Errorf("SERVER_PORT must be between 1 and 65535")
+	}
+	if spec.Installer == "code-server" && cfg.Request.CodeServerPassword != "" {
+		password := cfg.Request.CodeServerPassword
+		if len(password) < 12 || len(password) > 128 || strings.ContainsAny(password, "\x00\r\n") {
+			return fmt.Errorf("CODE_SERVER_PASSWORD must contain 12 to 128 characters without newlines")
+		}
 	}
 	ports := map[int]string{}
 	if cfg.AllocationPort > 0 {
@@ -150,6 +157,225 @@ func (p *catalogProvider) installSteam(ctx context.Context, ic InstallContext, r
 		}
 	}
 	return resolved, nil
+}
+
+func (p *catalogProvider) installOpenMP(ic InstallContext, resolved Resolved) (Resolved, error) {
+	if err := validateStatePathToken("open.mp version", resolved.Artifact.Version); err != nil {
+		return resolved, err
+	}
+	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
+	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
+		return resolved, err
+	}
+	staged, err := os.MkdirTemp(managed, ".openmp-*")
+	if err != nil {
+		return resolved, err
+	}
+	defer os.RemoveAll(staged)
+	if err := extractRuntime(ic.Artifact, staged, "tar.gz"); err != nil {
+		return resolved, fmt.Errorf("extract open.mp: %w", err)
+	}
+	source := filepath.Join(staged, "Server")
+	if err := requireRegularExecutable(filepath.Join(source, "omp-server")); err != nil {
+		return resolved, fmt.Errorf("open.mp archive: %w", err)
+	}
+	versionRoot := filepath.Join(managed, resolved.Artifact.Version)
+	if err := replaceManagedDirectory(managed, source, versionRoot); err != nil {
+		return resolved, err
+	}
+	if err := linkMutableData(ic.Home, versionRoot,
+		[]string{"gamemodes", "filterscripts", "scriptfiles", "models", "npcmodes", "recordings"},
+		[]string{"config.json", "bans.json"}); err != nil {
+		return resolved, err
+	}
+	resolved.WorkDir = versionRoot
+	resolved.Command = []string{filepath.Join(versionRoot, "omp-server")}
+	return resolved, nil
+}
+
+func (p *catalogProvider) installMTA(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
+	if err := validateStatePathToken("MTA version", resolved.Artifact.Version); err != nil {
+		return resolved, err
+	}
+	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
+	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
+		return resolved, err
+	}
+	staged, err := os.MkdirTemp(managed, ".mtasa-*")
+	if err != nil {
+		return resolved, err
+	}
+	defer os.RemoveAll(staged)
+	if err := extractRuntime(ic.Artifact, staged, "tar.gz"); err != nil {
+		return resolved, fmt.Errorf("extract MTA server: %w", err)
+	}
+	source := filepath.Join(staged, "multitheftauto_linux_x64")
+	if err := requireRegularExecutable(filepath.Join(source, "mta-server64")); err != nil {
+		return resolved, fmt.Errorf("MTA server archive: %w", err)
+	}
+	versionRoot := filepath.Join(managed, resolved.Artifact.Version)
+	if err := replaceManagedDirectory(managed, source, versionRoot); err != nil {
+		return resolved, fmt.Errorf("install MTA server: %w", err)
+	}
+	if err := linkMutableData(ic.Home, versionRoot, []string{"mods"}, nil); err != nil {
+		return resolved, err
+	}
+	deathmatch := filepath.Join(ic.Home, "mods", "deathmatch")
+	if err := secureMkdirAll(ic.Home, deathmatch, 0o750); err != nil {
+		return resolved, err
+	}
+	baseArchive, err := p.downloadPinnedOption(ctx, ic, "base", "tar.gz")
+	if err != nil {
+		return resolved, err
+	}
+	baseStage := filepath.Join(staged, "base-stage")
+	if err := os.MkdirAll(baseStage, 0o750); err != nil {
+		return resolved, err
+	}
+	if err := extractRuntime(baseArchive, baseStage, "tar.gz"); err != nil {
+		return resolved, fmt.Errorf("extract MTA base config: %w", err)
+	}
+	if err := copyTreeMissing(filepath.Join(baseStage, "baseconfig"), deathmatch); err != nil {
+		return resolved, fmt.Errorf("install MTA base config: %w", err)
+	}
+	resourcesArchive, err := p.downloadPinnedOption(ctx, ic, "resources", "zip")
+	if err != nil {
+		return resolved, err
+	}
+	resourcesStage := filepath.Join(staged, "resources-stage")
+	if err := os.MkdirAll(resourcesStage, 0o750); err != nil {
+		return resolved, err
+	}
+	if err := extractZipSafe(resourcesArchive, resourcesStage); err != nil {
+		return resolved, fmt.Errorf("extract MTA resources: %w", err)
+	}
+	if err := copyTreeMissing(resourcesStage, filepath.Join(deathmatch, "resources")); err != nil {
+		return resolved, fmt.Errorf("install MTA resources: %w", err)
+	}
+	resolved.WorkDir = versionRoot
+	resolved.Command = []string{filepath.Join(versionRoot, "mta-server64")}
+	return resolved, nil
+}
+
+func (p *catalogProvider) downloadPinnedOption(ctx context.Context, ic InstallContext, name, kind string) (string, error) {
+	rawURL, checksum := p.spec.Options[name+"_url"], p.spec.Options[name+"_sha256"]
+	if rawURL == "" || !validHexDigest(checksum, 64) {
+		return "", fmt.Errorf("%s catalog artifact is not pinned", name)
+	}
+	fileName := "mtasa-" + name + "." + kind
+	target := filepath.Join(ic.ControlDir, "cache", "artifacts", fileName)
+	if err := secureMkdirAll(ic.ControlDir, filepath.Dir(target), 0o750); err != nil {
+		return "", err
+	}
+	_, err := ic.HTTP.Download(ctx, Artifact{URL: rawURL, FileName: fileName, Kind: kind, SHA256: checksum}, target)
+	if err != nil {
+		return "", fmt.Errorf("download MTA %s: %w", name, err)
+	}
+	return target, nil
+}
+
+func (p *catalogProvider) installCodeServer(ic InstallContext, resolved Resolved) (Resolved, error) {
+	if err := validateStatePathToken("code-server version", resolved.Artifact.Version); err != nil {
+		return resolved, err
+	}
+	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
+	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
+		return resolved, err
+	}
+	staged, err := os.MkdirTemp(managed, ".code-server-*")
+	if err != nil {
+		return resolved, err
+	}
+	defer os.RemoveAll(staged)
+	if err := extractRuntime(ic.Artifact, staged, "tar.gz"); err != nil {
+		return resolved, fmt.Errorf("extract code-server: %w", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(staged, "code-server-*-linux-*"))
+	if err != nil || len(matches) != 1 {
+		return resolved, fmt.Errorf("code-server archive has an unexpected layout")
+	}
+	if err := requireRegularExecutable(filepath.Join(matches[0], "bin", "code-server")); err != nil {
+		return resolved, fmt.Errorf("code-server archive: %w", err)
+	}
+	versionRoot := filepath.Join(managed, resolved.Artifact.Version)
+	if err := replaceManagedDirectory(managed, matches[0], versionRoot); err != nil {
+		return resolved, err
+	}
+	resolved.WorkDir = ic.Home
+	resolved.Command = []string{filepath.Join(versionRoot, "bin", "code-server")}
+	return resolved, nil
+}
+
+func requireRegularExecutable(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
+		return fmt.Errorf("%s is not a regular executable", path)
+	}
+	return nil
+}
+
+func replaceManagedDirectory(root, source, target string) error {
+	root, source, target = filepath.Clean(root), filepath.Clean(source), filepath.Clean(target)
+	if !strings.HasPrefix(source, root+string(filepath.Separator)) || !strings.HasPrefix(target, root+string(filepath.Separator)) {
+		return fmt.Errorf("managed directory replacement escapes its root")
+	}
+	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symlink managed target")
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	backup := target + ".previous"
+	if err := os.RemoveAll(backup); err != nil {
+		return err
+	}
+	hadTarget := false
+	if _, err := os.Lstat(target); err == nil {
+		if err := os.Rename(target, backup); err != nil {
+			return err
+		}
+		hadTarget = true
+	}
+	if err := os.Rename(source, target); err != nil {
+		if hadTarget {
+			_ = os.Rename(backup, target)
+		}
+		return err
+	}
+	return os.RemoveAll(backup)
+}
+
+func copyTreeMissing(source, target string) error {
+	return filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(target, relative)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symlink in copied tree: %s", relative)
+		}
+		if info.IsDir() {
+			return secureMkdirAll(target, destination, 0o750)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing non-regular file in copied tree: %s", relative)
+		}
+		if current, statErr := os.Lstat(destination); statErr == nil {
+			if !current.Mode().IsRegular() {
+				return fmt.Errorf("refusing non-regular existing file: %s", relative)
+			}
+			return nil
+		} else if !os.IsNotExist(statErr) {
+			return statErr
+		}
+		return copyFile(path, destination, info.Mode().Perm())
+	})
 }
 
 var buildIDPattern = regexp.MustCompile(`(?m)"buildid"\s+"([0-9]+)"`)
@@ -409,7 +635,54 @@ func (p *catalogProvider) buildServiceProcess(ctx context.Context, cfg Config, s
 	if p.spec.Installer == "web" {
 		return p.buildWebProcess(cfg, state)
 	}
+	if p.spec.Installer == "code-server" {
+		return p.buildCodeServerProcess(cfg, state)
+	}
 	return p.buildGameProcess(ctx, cfg, state)
+}
+
+func (p *catalogProvider) buildCodeServerProcess(cfg Config, state LaunchState) (ProcessSpec, error) {
+	binary := first(state.Command)
+	if err := requireRegularExecutable(binary); err != nil {
+		return ProcessSpec{}, fmt.Errorf("code-server executable: %w", err)
+	}
+	password := cfg.Request.CodeServerPassword
+	if password == "" {
+		var err error
+		password, err = ensureAdminSecret(cfg, "app-code-server")
+		if err != nil {
+			return ProcessSpec{}, err
+		}
+	}
+	passwordFile := filepath.Join(cfg.Home, "code-server-password.txt")
+	if err := writeAtomicFile(passwordFile, []byte(password+"\n"), 0o600); err != nil {
+		return ProcessSpec{}, fmt.Errorf("write code-server password file: %w", err)
+	}
+	managedDir := filepath.Join(cfg.Control, "code-server")
+	dataDir := filepath.Join(managedDir, "data")
+	configFile := filepath.Join(managedDir, "config.yaml")
+	extensionsDir := filepath.Join(cfg.Home, "code-server-extensions")
+	for _, directory := range []string{managedDir, dataDir, extensionsDir} {
+		root := cfg.Home
+		if strings.HasPrefix(directory, cfg.Control+string(filepath.Separator)) {
+			root = cfg.Control
+		}
+		if err := secureMkdirAll(root, directory, 0o750); err != nil {
+			return ProcessSpec{}, err
+		}
+	}
+	command := []string{binary,
+		"--bind-addr", "0.0.0.0:" + strconv.Itoa(cfg.AllocationPort),
+		"--auth", "password", "--disable-telemetry", "--disable-update-check",
+		"--config", configFile, "--user-data-dir", dataDir, "--extensions-dir", extensionsDir, cfg.Home,
+	}
+	readiness := p.spec.Readiness
+	readiness.PortVariable = strconv.Itoa(cfg.AllocationPort)
+	environment := append([]string(nil), state.Environment...)
+	environment = upsertEnvironment(environment, "HOME", cfg.Home)
+	environment = upsertEnvironment(environment, "PASSWORD", password)
+	return ProcessSpec{Command: command, Directory: cfg.Home, Environment: environment, Readiness: readiness,
+		Control: p.spec.Control, ReadyTimeout: time.Duration(readiness.TimeoutSeconds) * time.Second}, nil
 }
 
 func (p *catalogProvider) buildWebProcess(cfg Config, state LaunchState) (ProcessSpec, error) {
@@ -628,6 +901,15 @@ func (p *catalogProvider) buildGameProcess(_ context.Context, cfg Config, state 
 			}
 		}
 		command = append(command, "--port", port, "--start-server", save)
+	case "samp":
+		if err := configureOpenMP(root, cfg); err != nil {
+			return ProcessSpec{}, err
+		}
+	case "mtasa":
+		if err := configureMTA(root, cfg); err != nil {
+			return ProcessSpec{}, err
+		}
+		command = append(command, "--port", port, "--httpport", port, "-n")
 	default:
 		return ProcessSpec{}, fmt.Errorf("unsupported game provider %q", p.spec.ID)
 	}
@@ -644,6 +926,77 @@ func (p *catalogProvider) buildGameProcess(_ context.Context, cfg Config, state 
 	}
 	return ProcessSpec{Command: command, Directory: root, Environment: environment, Readiness: readiness, ReadyPatterns: readiness.Patterns,
 		Control: control, StopCommand: control.StopCommand, ReadyTimeout: time.Duration(readiness.TimeoutSeconds) * time.Second}, nil
+}
+
+func configureOpenMP(root string, cfg Config) error {
+	path := filepath.Join(root, "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("open.mp config: %w", err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		return fmt.Errorf("decode open.mp config: %w", err)
+	}
+	config["name"] = cfg.Request.ServerName
+	config["max_players"] = cfg.Request.MaxPlayers
+	config["password"] = cfg.Request.ServerPassword
+	setJSONMapValues(config, "network", map[string]any{"bind": "0.0.0.0", "port": cfg.AllocationPort})
+	setJSONMapValues(config, "artwork", map[string]any{"enable": false})
+	setJSONMapValues(config, "rcon", map[string]any{"enable": false})
+	encoded, err := json.MarshalIndent(config, "", "    ")
+	if err != nil {
+		return err
+	}
+	return writeAtomicFile(path, append(encoded, '\n'), 0o600)
+}
+
+func setJSONMapValues(root map[string]any, key string, values map[string]any) {
+	nested, ok := root[key].(map[string]any)
+	if !ok {
+		nested = map[string]any{}
+		root[key] = nested
+	}
+	for name, value := range values {
+		nested[name] = value
+	}
+}
+
+func configureMTA(root string, cfg Config) error {
+	path := filepath.Join(root, "mods", "deathmatch", "mtaserver.conf")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("MTA config: %w", err)
+	}
+	values := map[string]string{
+		"servername": cfg.Request.ServerName, "serverip": "auto",
+		"serverport": strconv.Itoa(cfg.AllocationPort), "httpport": strconv.Itoa(cfg.AllocationPort),
+		"maxplayers": strconv.Itoa(cfg.Request.MaxPlayers), "ase": "1", "password": cfg.Request.ServerPassword,
+	}
+	text := string(data)
+	for tag, value := range values {
+		var replaceErr error
+		text, replaceErr = replaceXMLTagText(text, tag, value)
+		if replaceErr != nil {
+			return replaceErr
+		}
+	}
+	return writeAtomicFile(path, []byte(text), 0o600)
+}
+
+func replaceXMLTagText(document, tag, value string) (string, error) {
+	pattern := regexp.MustCompile(`(?s)(<` + regexp.QuoteMeta(tag) + `>).*?(</` + regexp.QuoteMeta(tag) + `>)`)
+	if !pattern.MatchString(document) {
+		return "", fmt.Errorf("MTA config lacks <%s>", tag)
+	}
+	var escaped strings.Builder
+	if err := xml.EscapeText(&escaped, []byte(value)); err != nil {
+		return "", err
+	}
+	return pattern.ReplaceAllStringFunc(document, func(match string) string {
+		parts := pattern.FindStringSubmatch(match)
+		return parts[1] + escaped.String() + parts[2]
+	}), nil
 }
 
 func configurePalworld(root string, cfg Config, admin string) error {
@@ -734,11 +1087,11 @@ func safeGameExtraArgs(raw string) ([]string, error) {
 		return nil, fmt.Errorf("GAME_EXTRA_ARGS: %w", err)
 	}
 	protected := []string{
-		"-port", "+server.port", "-serverport", "-publicport", "-queryport", "-steamport", "-udpport",
+		"-port", "--port", "--httpport", "+server.port", "-serverport", "-publicport", "-queryport", "-steamport", "-udpport",
 		"-gameport", "-gameport2", "-gameport3", "-rconport", "+rcon.port", "-telnetport", "-reliableport",
 		"-externalreliableport", "-ip", "+server.ip", "-bind", "-force_install_dir", "+force_install_dir",
 		"+login", "+app_update", "-adminpassword", "-rconpassword", "+rcon.password", "-telnetpassword",
-		"-cachedir", "-logfile",
+		"-cachedir", "-logfile", "--config", "--bind-addr", "--auth", "--user-data-dir", "--extensions-dir",
 	}
 	for _, arg := range args {
 		lower := strings.ToLower(arg)

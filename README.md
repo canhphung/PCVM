@@ -1,6 +1,6 @@
 # PCVM
 
-PCVM v1.5.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 40 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
+PCVM v1.6.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 43 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
 ## Provider catalog
 
@@ -9,22 +9,23 @@ PCVM v1.5.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 40 pr
 | Minecraft Java | Vanilla, Paper, Purpur, Pufferfish, Fabric, Forge, NeoForge |
 | Minecraft Proxies | Velocity, BungeeCord |
 | Minecraft Bedrock | Bedrock Dedicated Server, PocketMine-MP, PowerNukkitX, Cloudburst Nukkit, Endstone |
+| Games — GTA Multiplayer | SA-MP / open.mp, Multi Theft Auto |
 | Games — Source & FPS | Counter-Strike 2, Garry's Mod, Left 4 Dead 2 |
 | Games — Survival | Palworld, Rust, Rust + uMod, Project Zomboid, Valheim, Valheim + BepInEx, 7 Days to Die, Unturned |
 | Games — Sandbox & Automation | Terraria, tModLoader, Satisfactory, Factorio |
 | Web Servers | Nginx, Apache HTTP Server, Caddy |
-| Applications & Bots | Node.js bot, Python bot, Lavalink |
+| Applications & Bots | Node.js bot, Python bot, Lavalink, VS Code Server (code-server) |
 | Virtual Machines â€” Lightweight Linux | Alpine Linux 3.23/3.24 |
 | Virtual Machines â€” Debian Family | Ubuntu Minimal 24.04/26.04 LTS, Debian 12/13 |
 | Virtual Machines â€” Enterprise Linux | AlmaLinux 9/10, Rocky Linux 9/10 |
 
-All game providers are AMD64-only. Web, Minecraft, application and VM providers remain available on ARM64 when their embedded artifact metadata supports it. VM guests always match the host architecture. Endstone is AMD64-only because its official wheel is x86-64; PowerNukkitX and Cloudburst Nukkit support both PCVM architectures. LeviLamina is not listed because its upstream currently publishes Windows-only builds, while PCVM does not include Wine. Waterfall is excluded because upstream ended maintenance. One server runs one provider at a time.
+All game providers are AMD64-only. `samp` installs the actively maintained open.mp server, which is backward-compatible with SA-MP scripts and clients, rather than an unmaintained third-party SA-MP binary. Web, Minecraft, code-server, bot and VM providers remain available on ARM64 when their embedded artifact metadata supports it. VM guests always match the host architecture. Endstone is AMD64-only because its official wheel is x86-64; PowerNukkitX and Cloudburst Nukkit support both PCVM architectures. LeviLamina is not listed because its upstream currently publishes Windows-only builds, while PCVM does not include Wine. Waterfall is excluded because upstream ended maintenance. One server runs one provider at a time.
 
 ## Install on Pterodactyl
 
-1. Download `egg-pcvm-1.5.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+1. Download `egg-pcvm-1.6.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
 2. Import it into a Nest on Pterodactyl 1.12.x.
-3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.5.0` image.
+3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.6.0` image.
 4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
 
 The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable startup command is:
@@ -48,6 +49,7 @@ PCVM reads Pterodactyl's primary `SERVER_PORT`, binds public services to `0.0.0.
 | Valheim / Valheim + BepInEx | `QUERY_PORT=SERVER_PORT+1` |
 | 7 Days to Die | `GAME_PORT_2=SERVER_PORT+1`, `GAME_PORT_3=SERVER_PORT+2` |
 | Unturned | `QUERY_PORT=SERVER_PORT+1` |
+| Multi Theft Auto | `QUERY_PORT=SERVER_PORT+123` |
 
 Palworld and Rust RCON plus 7 Days to Die Telnet bind to loopback and use `RCON_PORT` or `TELNET_PORT`; they are launcher control channels, not public allocations. Missing, out-of-range, duplicate or invalid-offset ports stop startup with an exact error.
 
@@ -56,6 +58,8 @@ Palworld and Rust RCON plus 7 Days to Die Telnet bind to loopback and use `RCON_
 Steam providers use the checksum-pinned AMD64 SteamCMD bootstrap, anonymous login and direct argv. PCVM stores the Steam build ID after `app_update ... validate`. Steam updates are in-place; if update or validation fails, state is not advanced and PCVM refuses to start the possibly partial installation.
 
 Rust uMod and Valheim BepInEx use official GitHub release assets with SHA-256 digests and are reapplied after game updates. Switching Rust ↔ Rust uMod or Valheim ↔ Valheim BepInEx preserves saves, configuration and plugin directories. Terraria ↔ tModLoader is intentionally incompatible.
+
+SA-MP/open.mp is installed from the official open.mp GitHub release and keeps gamemodes, filterscripts, models, scripts and configuration across in-family updates. Multi Theft Auto uses its official stable server, base configuration and resources archives; all three are pinned by SHA-256 in the embedded catalog. MTA uses the primary allocation for both UDP gameplay and TCP HTTP downloads, while its public-list query allocation must be `SERVER_PORT+123`.
 
 Console input is forwarded through stdin, Source RCON or Telnet according to provider metadata. Providers such as Valheim and Satisfactory only support signal-based stopping; console commands return a visible warning. Shutdown tries the provider's graceful path before SIGTERM and SIGKILL.
 
@@ -66,6 +70,10 @@ Console input is forwarded through stdin, Source RCON or Telnet according to pro
 Nginx, Apache and Caddy run non-root on `0.0.0.0:${SERVER_PORT}`. `WEB_MODE=static` serves `WEB_ROOT` (default `public`). `WEB_MODE=proxy` requires an HTTP(S) `UPSTREAM_URL` without credentials. PCVM resolves every upstream address and rejects loopback, private, link-local, shared, reserved and metadata destinations; configuration metacharacters are rejected before the canonical URL is quoted into generated configs. PCVM canonicalizes the web root inside `/home/container`; symlink traversal and path escape are rejected. Caddy automatic HTTPS is disabled because public TLS remains the responsibility of the proxy in front of Pterodactyl.
 
 PCVM owns the generated main configuration. Persistent extension snippets live under the Egg-denied internal `.pcvm/web/<provider>/conf.d` path and are not overwritten. Nginx, Apache and Caddy share compatibility family `web-static`, so switching between them preserves `public/`.
+
+## VS Code Server
+
+The `code-server` provider runs the official Coder standalone archive on `0.0.0.0:${SERVER_PORT}` with password authentication, telemetry and self-update disabled, and TLS delegated to Pterodactyl's external reverse proxy. Set `CODE_SERVER_PASSWORD` to at least 12 characters, or leave it blank and read the generated persistent password from `code-server-password.txt`. Extensions are kept in `code-server-extensions/`; editor data remains under the Egg-denied `.pcvm/code-server` directory. code-server intentionally gives the authenticated server owner an integrated terminal running as the container user; hosts that do not permit shell access should remove `code-server` from `ALLOWED_SOFTWARE`.
 
 ## State and safe switching
 
@@ -111,7 +119,7 @@ The release Egg defines the full public interface. Main groups are:
 - Core: `SOFTWARE`, `SOFTWARE_VERSION`, `SOFTWARE_BUILD`, `RUNTIME_VERSION`, `AUTO_UPDATE`, `UPDATE_REQUEST` and `RESET_CONFIRM`. Minecraft providers use Pterodactyl's native EULA popup: PCVM installs the selected provider, emits the standard EULA trigger before starting it, and continues automatically after **I Accept** writes `eula=true` and restarts the server. The legacy `ACCEPT_MINECRAFT_EULA=1` environment override remains supported but is no longer exposed as an Egg variable.
 - Games: `SERVER_NAME`, `SERVER_PASSWORD`, `ADMIN_PASSWORD`, `MAX_PLAYERS`, `GAME_MAP`, `GAME_WORLD`, `GAME_SEED`, `GAME_EXTRA_ARGS`, `STEAM_GSLT` and the port variables above.
 - Web: `WEB_MODE`, `WEB_ROOT`, `UPSTREAM_URL`.
-- Bots: `SOURCE_MODE`, `GIT_URL`, `GIT_BRANCH`, `ENTRY_FILE`, `APP_ARGS`, `APP_READY_PATTERN`.
+- Applications: bots use `SOURCE_MODE`, `GIT_URL`, `GIT_BRANCH`, `ENTRY_FILE`, `APP_ARGS`, `APP_READY_PATTERN`; code-server uses `CODE_SERVER_PASSWORD`.
 - VMs: `VM_MEMORY_MB`, `VM_CPUS`, `VM_DISK_GB`, `VM_DISK_COMPRESSION`, `VM_HOSTNAME`.
 - Admin policy: `ALLOWED_SOFTWARE`, `ALLOW_USER_RESET`, `BRAND_NAME`, `SUPPORT_URL`, `RUNTIME_MIRROR_URL`, `GIT_ALLOWED_HOSTS`, `CACHE_LIMIT_MB`, `CLEAR_CONSOLE`, `VM_MAX_MEMORY_MB`, `VM_MAX_CPUS`, `VM_MAX_DISK_GB`.
 

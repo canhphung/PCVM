@@ -214,3 +214,33 @@ func TestRebuildLaunchStateRejectsPathTraversalTokens(t *testing.T) {
 		}
 	}
 }
+
+func TestRebuildLaunchStateUsesFixedPathsForNewProviders(t *testing.T) {
+	home := t.TempDir()
+	control := filepath.Join(home, ".pcvm")
+	catalog, err := LoadCatalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp(Config{Home: home, Control: control, Arch: "amd64"}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
+	tests := []struct {
+		provider, version, want string
+	}{
+		{"samp", "v1.5.8.3079", filepath.Join(control, "managed", "samp", "v1.5.8.3079", "omp-server")},
+		{"mtasa", "1.6.0", filepath.Join(control, "managed", "mtasa", "1.6.0", "mta-server64")},
+		{"code-server", "v4.131.0", filepath.Join(control, "managed", "code-server", "v4.131.0", "bin", "code-server")},
+	}
+	for _, test := range tests {
+		t.Run(test.provider, func(t *testing.T) {
+			launch, err := app.rebuildLaunchState(context.Background(), catalogSpec(t, test.provider), State{
+				Provider: test.provider, ResolvedVersion: test.version, ResolvedBuild: "release", Architecture: "amd64",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(launch.Command) != 1 || launch.Command[0] != test.want {
+				t.Fatalf("trusted command=%v, want %s", launch.Command, test.want)
+			}
+		})
+	}
+}

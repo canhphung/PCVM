@@ -10,8 +10,8 @@ func TestEmbeddedCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Providers) != 40 {
-		t.Fatalf("providers=%d, want 40", len(c.Providers))
+	if len(c.Providers) != 43 {
+		t.Fatalf("providers=%d, want 43", len(c.Providers))
 	}
 	if _, ok := c.Provider("waterfall"); ok {
 		t.Fatal("Waterfall must not be shipped")
@@ -26,6 +26,10 @@ func TestEmbeddedCatalog(t *testing.T) {
 	bedrockARM := c.Available("arm64", map[string]bool{"powernukkitx": true, "cloudburst-nukkit": true, "endstone": true})
 	if len(bedrockARM) != 2 || bedrockARM[0].ID != "cloudburst-nukkit" || bedrockARM[1].ID != "powernukkitx" {
 		t.Fatalf("unexpected Bedrock ARM64 list: %#v", bedrockARM)
+	}
+	appsARM := c.Available("arm64", map[string]bool{"samp": true, "mtasa": true, "code-server": true})
+	if len(appsARM) != 1 || appsARM[0].ID != "code-server" {
+		t.Fatalf("unexpected new provider ARM64 list: %#v", appsARM)
 	}
 	vanilla, ok := c.Provider("vanilla")
 	if !ok || len(vanilla.ReadyPatterns) == 0 {

@@ -105,6 +105,15 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 		launch.WorkingDirectory = a.Config.Home
 		launch.Command = []string{filepath.Join(venv, "bin", "python3"), "-m", "endstone", "--server-folder", a.Config.Home, "--yes", "--remote", "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/v2"}
 		launch.Environment = []string{"PYTHONUNBUFFERED=1", "PYTHONDONTWRITEBYTECODE=1"}
+	case "openmp":
+		launch.WorkingDirectory = filepath.Join(managed, version)
+		launch.Command = []string{filepath.Join(launch.WorkingDirectory, "omp-server")}
+	case "mtasa":
+		launch.WorkingDirectory = filepath.Join(managed, version)
+		launch.Command = []string{filepath.Join(launch.WorkingDirectory, "mta-server64")}
+	case "code-server":
+		launch.WorkingDirectory = a.Config.Home
+		launch.Command = []string{filepath.Join(managed, version, "bin", "code-server")}
 	case "qemu-vm":
 		image, ok := findVMImageForArtifact(spec, state.Artifact, a.Config.Arch)
 		if !ok {
