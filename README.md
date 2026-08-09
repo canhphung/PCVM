@@ -1,6 +1,6 @@
 # PCVM
 
-PCVM v1.4.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 39 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
+PCVM v1.4.1 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 39 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
 ## Provider catalog
 
@@ -21,9 +21,9 @@ All game providers are AMD64-only. Web, Minecraft, application and VM providers 
 
 ## Install on Pterodactyl
 
-1. Download `egg-pcvm-1.4.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+1. Download `egg-pcvm-1.4.1.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
 2. Import it into a Nest on Pterodactyl 1.12.x.
-3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.4.0` image.
+3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.4.1` image.
 4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
 
 The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable startup command is:
@@ -62,13 +62,13 @@ Console input is forwarded through stdin, Source RCON or Telnet according to pro
 
 ## Web servers
 
-Nginx, Apache and Caddy run non-root on `0.0.0.0:${SERVER_PORT}`. `WEB_MODE=static` serves `WEB_ROOT` (default `public`). `WEB_MODE=proxy` requires an HTTP(S) `UPSTREAM_URL` without credentials and rejects link-local or metadata endpoints. PCVM canonicalizes the web root inside `/home/container`; symlink traversal and path escape are rejected. Caddy automatic HTTPS is disabled because public TLS remains the responsibility of the proxy in front of Pterodactyl.
+Nginx, Apache and Caddy run non-root on `0.0.0.0:${SERVER_PORT}`. `WEB_MODE=static` serves `WEB_ROOT` (default `public`). `WEB_MODE=proxy` requires an HTTP(S) `UPSTREAM_URL` without credentials. PCVM resolves every upstream address and rejects loopback, private, link-local, shared, reserved and metadata destinations; configuration metacharacters are rejected before the canonical URL is quoted into generated configs. PCVM canonicalizes the web root inside `/home/container`; symlink traversal and path escape are rejected. Caddy automatic HTTPS is disabled because public TLS remains the responsibility of the proxy in front of Pterodactyl.
 
-PCVM owns the generated main configuration. Persistent extension snippets live under `.pcvm/web/<provider>/conf.d` and are not overwritten. Nginx, Apache and Caddy share compatibility family `web-static`, so switching between them preserves `public/`.
+PCVM owns the generated main configuration. Persistent extension snippets live under the Egg-denied internal `.pcvm/web/<provider>/conf.d` path and are not overwritten. Nginx, Apache and Caddy share compatibility family `web-static`, so switching between them preserves `public/`.
 
 ## State and safe switching
 
-`.pcvm/state.json` schema 2 records provider, requested/resolved version, Steam build or artifact build, runtime, architecture, verified artifact and install time. Schema 1 state migrates atomically on read. Commands containing runtime secrets are rebuilt from state, catalog and Startup Variables on every boot and are not stored.
+`.pcvm/state.json` schema 3 records only installation identity: provider, requested/resolved version, Steam or artifact build, runtime line, architecture, verified artifact and install time. Schema 1/2 state migrates atomically on read and drops all legacy command, environment, working-directory, readiness and stop metadata. Process argv is rebuilt from the embedded catalog, fixed installation layout and validated Startup Variables on every boot. The Egg denies user file access to the internal `.pcvm` control directory as defense in depth; launcher policy never relies on that UI restriction.
 
 Paper, Purpur and Pufferfish share one compatibility family. Rust and Valheim variants share their respective families. A downgrade or incompatible family switch creates `.pcvm/pending-switch.json` and prints a 30-minute confirmation:
 
@@ -99,7 +99,7 @@ The Debian slim image contains Nginx, Apache, Git, CA certificates, archive/nati
 - Caddy 2 on AMD64/ARM64.
 - .NET 8 and SteamCMD on AMD64.
 
-Downloads require HTTPS, an allowlisted hostname, timeout/retry, a temporary file, checksum verification and atomic rename. The launcher never uses `curl | bash`, `eval`, arbitrary install commands or shell-composed startup commands.
+Downloads require HTTPS, an allowlisted hostname, timeout/retry, a temporary file, checksum verification and atomic rename. Before every launch, PCVM derives a complete file/symlink manifest from the checksum-pinned runtime archive, verifies the extracted tree and repairs missing, changed, unexpected or escaping-symlink entries. ZIP and runtime extraction reject unsafe archive links, traversal, existing symlink targets and symlinked parent directories. The launcher never uses `curl | bash`, `eval`, arbitrary install commands or shell-composed startup commands.
 
 ## Variables
 

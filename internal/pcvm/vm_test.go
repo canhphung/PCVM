@@ -148,6 +148,12 @@ func TestQEMUArgumentsCannotBeOverriddenByUserInput(t *testing.T) {
 			t.Fatalf("QEMU argv missing %q: %s", required, joined)
 		}
 	}
+	if strings.Count(joined, "-cpu max") != 1 {
+		t.Fatalf("AMD64 TCG must use exactly one max CPU model: %s", joined)
+	}
+	if !strings.Contains(joined, "virtio-blk-pci,drive=osdisk,bootindex=1") || !strings.Contains(joined, "scsi-cd,drive=seed,bootindex=99") {
+		t.Fatalf("QEMU argv does not boot the OS disk before the NoCloud seed: %s", joined)
+	}
 }
 
 func TestVMInstallMetadataMatching(t *testing.T) {

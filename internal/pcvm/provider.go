@@ -24,7 +24,7 @@ func NewProvider(spec ProviderSpec) Provider               { return &catalogProv
 func (p *catalogProvider) Spec() ProviderSpec              { return p.spec }
 func (p *catalogProvider) CompareVersions(a, b string) int { return CompareVersions(a, b) }
 
-func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state State) (ProcessSpec, error) {
+func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state LaunchState) (ProcessSpec, error) {
 	if p.spec.Installer == "qemu-vm" {
 		return p.buildVMProcess(cfg, state)
 	}
@@ -643,7 +643,7 @@ func resolveGitHub(ctx context.Context, req Request, h *HTTPClient, repo, assetP
 
 func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
 	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
-	if err := os.MkdirAll(managed, 0o750); err != nil {
+	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
 		return resolved, err
 	}
 	switch p.spec.Installer {
@@ -691,7 +691,7 @@ func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolv
 		resolved.Environment = []string{"LD_LIBRARY_PATH=."}
 	case "java-installer":
 		managed = filepath.Join(managed, resolved.Artifact.Version)
-		if err := os.MkdirAll(managed, 0o750); err != nil {
+		if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
 			return resolved, err
 		}
 		cmd := exec.CommandContext(ctx, ic.Runtime, "-jar", ic.Artifact, "--installServer")
@@ -847,9 +847,9 @@ func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r R
 			entry = "main.py"
 		}
 	}
-	entry = filepath.Clean(entry)
-	if filepath.IsAbs(entry) || entry == ".." || strings.HasPrefix(entry, ".."+string(filepath.Separator)) {
-		return r, fmt.Errorf("ENTRY_FILE must stay inside source")
+	entry, err := cleanRelativeEntry(entry)
+	if err != nil {
+		return r, err
 	}
 	entryPath := filepath.Join(source, entry)
 	info, err := os.Stat(entryPath)
@@ -1046,13 +1046,12 @@ func extractZipSafe(path, dst string) error {
 	}
 	defer z.Close()
 	for _, f := range z.File {
-		clean := filepath.Clean(f.Name)
-		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("unsafe archive path %q", f.Name)
+		clean, target, err := archiveTarget(dst, f.Name)
+		if err != nil {
+			return err
 		}
-		target := filepath.Join(dst, clean)
 		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o750); err != nil {
+			if err := secureMkdirAll(dst, target, 0o750); err != nil {
 				return err
 			}
 			continue
@@ -1060,26 +1059,27 @@ func extractZipSafe(path, dst string) error {
 		if f.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("archive may not contain symlink %q", f.Name)
 		}
-		if _, err := os.Stat(target); err == nil && isBedrockConfig(clean) {
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		if info, err := os.Lstat(target); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing existing symlink archive target %q", clean)
+			}
+			if isBedrockConfig(clean) {
+				continue
+			}
+		} else if !os.IsNotExist(err) {
 			return err
 		}
 		in, err := f.Open()
 		if err != nil {
 			return err
 		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, f.Mode()|0o500)
-		if err != nil {
-			in.Close()
-			return err
+		writeErr := writeArchiveRegular(dst, target, in, f.Mode()|0o500)
+		closeErr := in.Close()
+		if writeErr != nil {
+			return writeErr
 		}
-		_, copyErr := io.Copy(out, in)
-		in.Close()
-		out.Close()
-		if copyErr != nil {
-			return copyErr
+		if closeErr != nil {
+			return closeErr
 		}
 	}
 	return nil

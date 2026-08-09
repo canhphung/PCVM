@@ -32,8 +32,9 @@ jobs:
           go run ./cmd/pcvm version
           jq -e '.meta.version == "PTDL_v2" and .startup == "/usr/local/bin/pcvm run"' egg/egg-pcvm.json
           jq -e 'length == 27 and all(.[]; (.sha256 | length) == 64)' runtime-manifest.json
-          jq -e '.schema == 3 and .version == "1.4.0" and (.providers | length) == 39 and ([.providers[].vm_images[]?] | length) == 16' internal/pcvm/catalog.json
-          jq -e '.docker_images == {"PCVM 1.4.0":"ghcr.io/canhphung/pcvm:1.4.0"}' egg/egg-pcvm.json
+          jq -e '.schema == 3 and .version == "1.4.1" and (.providers | length) == 39 and ([.providers[].vm_images[]?] | length) == 16' internal/pcvm/catalog.json
+          jq -e '.docker_images == {"PCVM 1.4.1":"ghcr.io/canhphung/pcvm:1.4.1"}' egg/egg-pcvm.json
+          jq -e '.file_denylist == [".pcvm"]' egg/egg-pcvm.json
       - name: Cross-compile launcher
         run: |
           for arch in amd64 arm64; do
@@ -86,10 +87,10 @@ jobs:
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - name: Build architecture image
-        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.4.0 -t "pcvm:web-${ARCH}" .
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.4.1 -t "pcvm:web-${ARCH}" .
         env:
           ARCH: ${{ matrix.arch }}
-      - name: Test static and reverse-proxy modes
+      - name: Test static mode and private-upstream rejection
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -102,31 +103,39 @@ jobs:
           }
           trap cleanup EXIT
           for provider in nginx apache caddy; do
-            for mode in static proxy; do
-              docker rm -f pcvm-under-test >/dev/null 2>&1 || true
-              args=(--platform "linux/${ARCH}" -d --name pcvm-under-test --network pcvm-web -p 0:8080
-                -e "SOFTWARE=${provider}" -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 -e "WEB_MODE=${mode}")
-              if [ "$mode" = proxy ]; then
-                args+=(-e UPSTREAM_URL=http://pcvm-upstream:80)
+            docker rm -f pcvm-under-test >/dev/null 2>&1 || true
+            docker run --platform "linux/${ARCH}" -d --name pcvm-under-test --network pcvm-web -p 0:8080 \
+              -e "SOFTWARE=${provider}" -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 -e WEB_MODE=static \
+              "pcvm:web-${ARCH}"
+            ready=0
+            for _ in $(seq 1 180); do
+              if docker logs pcvm-under-test 2>&1 | grep -Fq '[PCVM] READY'; then
+                ready=1
+                break
               fi
-              docker run "${args[@]}" "pcvm:web-${ARCH}"
-              ready=0
-              for _ in $(seq 1 180); do
-                if docker logs pcvm-under-test 2>&1 | grep -Fq '[PCVM] READY'; then
-                  ready=1
-                  break
-                fi
-                if ! docker inspect -f '{{.State.Running}}' pcvm-under-test | grep -q true; then
-                  docker logs pcvm-under-test
-                  exit 1
-                fi
-                sleep 1
-              done
-              test "$ready" = 1
-              host_port=$(docker inspect -f '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' pcvm-under-test)
-              curl --fail --retry 10 --retry-delay 1 "http://127.0.0.1:${host_port}/" >/dev/null
-              docker stop --time 40 pcvm-under-test
+              if ! docker inspect -f '{{.State.Running}}' pcvm-under-test | grep -q true; then
+                docker logs pcvm-under-test
+                exit 1
+              fi
+              sleep 1
             done
+            test "$ready" = 1
+            host_port=$(docker inspect -f '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' pcvm-under-test)
+            curl --fail --retry 10 --retry-delay 1 "http://127.0.0.1:${host_port}/" >/dev/null
+            docker stop --time 40 pcvm-under-test
+
+            docker rm -f pcvm-under-test >/dev/null 2>&1 || true
+            docker run --platform "linux/${ARCH}" -d --name pcvm-under-test --network pcvm-web \
+              -e "SOFTWARE=${provider}" -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 -e WEB_MODE=proxy \
+              -e UPSTREAM_URL=http://pcvm-upstream:80 "pcvm:web-${ARCH}"
+            for _ in $(seq 1 60); do
+              if ! docker inspect -f '{{.State.Running}}' pcvm-under-test | grep -q true; then
+                break
+              fi
+              sleep 1
+            done
+            test "$(docker inspect -f '{{.State.Running}}' pcvm-under-test)" = false
+            docker logs pcvm-under-test 2>&1 | grep -Fq 'resolves to blocked address'
           done
       - name: Verify non-root QEMU and firmware under Wings-like restrictions
         env:

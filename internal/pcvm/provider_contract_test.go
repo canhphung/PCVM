@@ -123,7 +123,7 @@ func TestBedrockExtensionResolverFixtures(t *testing.T) {
 }
 
 func TestBedrockJavaProcessArguments(t *testing.T) {
-	state := State{Command: []string{"java", "-jar", "server.jar"}, WorkingDirectory: "/home/container"}
+	state := LaunchState{Command: []string{"java", "-jar", "server.jar"}, WorkingDirectory: "/home/container"}
 	cfg := Config{AllocationPort: 19140, Request: Request{ServerName: "PCVM Bedrock"}}
 	power, err := NewProvider(catalogSpec(t, "powernukkitx")).BuildProcess(context.Background(), cfg, state)
 	if err != nil {

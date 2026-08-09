@@ -45,6 +45,12 @@ func (a *App) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if state != nil {
+		if installedSpec, ok := a.Catalog.Provider(state.Provider); ok {
+			// Family is catalog policy, never an authority supplied by state.json.
+			state.Family = installedSpec.Family
+		}
+	}
 	req := a.Config.Request
 	if req.Software == "interactive" {
 		if state != nil {
@@ -124,7 +130,7 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		return fmt.Errorf("install %s: %w", provider.Spec().ID, err)
 	}
-	newState := State{Schema: StateSchema, Provider: spec.ID, Family: spec.Family, RequestedVersion: req.Version, RequestedBuild: req.Build, ResolvedVersion: installed.Artifact.Version, ResolvedBuild: installed.Artifact.Build, RuntimeKind: installed.RuntimeKind, RuntimeVersion: installed.RuntimeVersion, RuntimeExecutable: first(installed.Command), Architecture: a.Config.Arch, Artifact: installed.Artifact, Command: installed.Command, Environment: installed.Environment, WorkingDirectory: installed.WorkDir, ReadyPatterns: installed.ReadyPatterns, StopCommand: installed.StopCommand, LastUpdateRequest: req.UpdateRequest, InstalledAt: a.Now()}
+	newState := State{Schema: StateSchema, Provider: spec.ID, Family: spec.Family, RequestedVersion: req.Version, RequestedBuild: req.Build, ResolvedVersion: installed.Artifact.Version, ResolvedBuild: installed.Artifact.Build, RuntimeKind: installed.RuntimeKind, RuntimeVersion: installed.RuntimeVersion, Architecture: a.Config.Arch, Artifact: installed.Artifact, LastUpdateRequest: req.UpdateRequest, InstalledAt: a.Now()}
 	if err := SaveState(a.Config.Control, newState); err != nil {
 		return err
 	}
@@ -161,6 +167,9 @@ func (a *App) prepare(ctx context.Context, p Provider, req Request, resolved Res
 	preparedSource := ""
 	if resolved.Artifact.URL != "" {
 		artifactPath = filepath.Join(a.Config.Control, "cache", "artifacts", p.Spec().ID+"-"+resolved.Artifact.Version+"-"+resolved.Artifact.FileName)
+		if err := secureMkdirAll(a.Config.Control, filepath.Dir(artifactPath), 0o750); err != nil {
+			return resolved, InstallContext{}, fmt.Errorf("prepare artifact cache: %w", err)
+		}
 		var err error
 		resolved.Artifact, err = a.HTTP.Download(ctx, resolved.Artifact, artifactPath)
 		if err != nil {
@@ -182,7 +191,7 @@ func (a *App) prepareGitSource(ctx context.Context, providerID string, req Reque
 	sum := sha256.Sum256([]byte(req.GitURL + "\x00" + req.GitBranch))
 	root := filepath.Join(a.Config.Control, "cache", "sources")
 	target := filepath.Join(root, fmt.Sprintf("%s-%x", providerID, sum[:8]))
-	if err := os.MkdirAll(root, 0o750); err != nil {
+	if err := secureMkdirAll(a.Config.Control, root, 0o750); err != nil {
 		return "", err
 	}
 	if _, err := os.Stat(filepath.Join(target, ".git")); err == nil {
@@ -225,9 +234,9 @@ func validatePreparedEntry(root, providerID, entry string) error {
 			entry = "main.py"
 		}
 	}
-	entry = filepath.Clean(entry)
-	if filepath.IsAbs(entry) || entry == ".." || strings.HasPrefix(entry, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("ENTRY_FILE must stay inside source")
+	entry, err := cleanRelativeEntry(entry)
+	if err != nil {
+		return err
 	}
 	info, err := os.Stat(filepath.Join(root, entry))
 	if err != nil {
@@ -266,39 +275,41 @@ func (a *App) handleReset(state State, target ProviderSpec, targetVersion, reaso
 }
 
 func (a *App) runState(ctx context.Context, state State) error {
-	if len(state.Command) == 0 {
-		return fmt.Errorf("state contains no command")
-	}
 	spec, ok := a.Catalog.Provider(state.Provider)
 	if !ok {
 		return fmt.Errorf("state references unknown provider %q", state.Provider)
 	}
-	allocationChanged, err := a.syncPrimaryAllocation(state)
+	if !a.Config.Policy.AllowedSoftware[spec.ID] {
+		return fmt.Errorf("provider %q is disabled by host policy", spec.ID)
+	}
+	if !contains(spec.Architectures, a.Config.Arch) {
+		return fmt.Errorf("provider %q has no %s artifact", spec.ID, a.Config.Arch)
+	}
+	if state.Architecture != "" && state.Architecture != a.Config.Arch {
+		return fmt.Errorf("state architecture %q does not match container architecture %q", state.Architecture, a.Config.Arch)
+	}
+	if err := ValidateProviderRequest(spec, a.Config); err != nil {
+		return err
+	}
+	launch, err := a.rebuildLaunchState(ctx, spec, state)
+	if err != nil {
+		return fmt.Errorf("rebuild trusted process metadata for %s: %w", state.Provider, err)
+	}
+	allocationChanged, err := a.syncPrimaryAllocation(launch)
 	if err != nil {
 		return err
 	}
 	if allocationChanged {
 		a.Log.Printf("configured primary allocation 0.0.0.0:%d for %s", a.Config.AllocationPort, state.Provider)
 	}
-	if _, err := compileReadyPatterns(state.ReadyPatterns); err != nil {
-		if _, catalogErr := compileReadyPatterns(spec.ReadyPatterns); catalogErr != nil {
-			return fmt.Errorf("repair stored readiness metadata for provider %q: %w", state.Provider, catalogErr)
-		}
-		a.Log.Printf("WARNING: repaired invalid stored readiness metadata for %s from the embedded catalog", state.Provider)
-		state.ReadyPatterns = append([]string(nil), spec.ReadyPatterns...)
-		state.StopCommand = spec.StopCommand
-		if err := SaveState(a.Config.Control, state); err != nil {
-			return fmt.Errorf("save repaired state: %w", err)
-		}
-	}
-	process, err := NewProvider(spec).BuildProcess(ctx, a.Config, state)
+	process, err := NewProvider(spec).BuildProcess(ctx, a.Config, launch)
 	if err != nil {
 		return fmt.Errorf("build process for %s: %w", state.Provider, err)
 	}
-	process.Environment = allocationEnvironment(state.Provider, process.Environment, a.Config.AllocationPort)
-	process.Environment, err = processUserEnvironment(state.Provider, a.Config.Home, process.Environment)
+	process.Environment = allocationEnvironment(launch.Provider, process.Environment, a.Config.AllocationPort)
+	process.Environment, err = processUserEnvironment(launch.Provider, a.Config.Home, process.Environment)
 	if err != nil {
-		return fmt.Errorf("prepare process environment for %s: %w", state.Provider, err)
+		return fmt.Errorf("prepare process environment for %s: %w", launch.Provider, err)
 	}
 	if process.ReadyAfter == 0 {
 		process.ReadyAfter = 5 * time.Second

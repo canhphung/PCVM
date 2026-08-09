@@ -36,7 +36,7 @@ func TestJavaAllocationPreservesProperties(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &App{Config: Config{Home: home, AllocationPort: 30123}}
-	changed, err := app.syncPrimaryAllocation(State{Provider: "vanilla"})
+	changed, err := app.syncPrimaryAllocation(LaunchState{Provider: "vanilla"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestJavaAllocationPreservesProperties(t *testing.T) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
 	}
-	changed, err = app.syncPrimaryAllocation(State{Provider: "vanilla"})
+	changed, err = app.syncPrimaryAllocation(LaunchState{Provider: "vanilla"})
 	if err != nil || changed {
 		t.Fatalf("idempotent update changed=%v err=%v", changed, err)
 	}
@@ -73,7 +73,7 @@ func TestVelocityAllocationUsesJarTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &App{Config: Config{Home: home, AllocationPort: 30124}}
-	changed, err := app.syncPrimaryAllocation(State{Provider: "velocity", Command: []string{"java", "-jar", jar}})
+	changed, err := app.syncPrimaryAllocation(LaunchState{Provider: "velocity", Command: []string{"java", "-jar", jar}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestBungeeAllocationOnlyChangesFirstListener(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &App{Config: Config{Home: home, AllocationPort: 30125}}
-	if _, err := app.syncPrimaryAllocation(State{Provider: "bungeecord"}); err != nil {
+	if _, err := app.syncPrimaryAllocation(LaunchState{Provider: "bungeecord"}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(home, "config.yml"))
@@ -127,7 +127,7 @@ func TestBedrockProvidersAndLavalinkAllocation(t *testing.T) {
 				t.Fatal(err)
 			}
 			app := &App{Config: Config{Home: home, AllocationPort: 30126}}
-			if _, err := app.syncPrimaryAllocation(State{Provider: test.provider}); err != nil {
+			if _, err := app.syncPrimaryAllocation(LaunchState{Provider: test.provider}); err != nil {
 				t.Fatal(err)
 			}
 			data, _ := os.ReadFile(filepath.Join(home, test.file))
@@ -183,10 +183,18 @@ func TestRunStateSyncsAllocationBeforeStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	app := NewApp(Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 30128}, catalog, bytes.NewReader(nil), &output, &output)
+	control := filepath.Join(home, ".pcvm")
+	app := NewApp(Config{Home: home, Control: control, Arch: "amd64", AllocationPort: 30128, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}, Request: Request{MaxPlayers: 16}}, catalog, bytes.NewReader(nil), &output, &output)
 	supervisor := &recordingSupervisor{}
 	app.Supervisor = supervisor
-	state := State{Provider: "vanilla", Command: []string{"server"}, WorkingDirectory: home, ReadyPatterns: []string{`Done \(`}}
+	state := State{Provider: "bedrock", ResolvedVersion: "1.21.0", ResolvedBuild: "release", Architecture: "amd64"}
+	executable := filepath.Join(control, "managed", "bedrock", "1.21.0", "bedrock_server")
+	if err := os.MkdirAll(filepath.Dir(executable), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("fixture"), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.runState(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +217,7 @@ func TestManagedConfigRejectsSymlink(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 	app := &App{Config: Config{Home: home, AllocationPort: 30129}}
-	if _, err := app.syncPrimaryAllocation(State{Provider: "vanilla"}); err == nil {
+	if _, err := app.syncPrimaryAllocation(LaunchState{Provider: "vanilla"}); err == nil {
 		t.Fatal("managed allocation followed a symlink")
 	}
 	data, _ := os.ReadFile(outside)

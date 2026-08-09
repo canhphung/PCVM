@@ -3,6 +3,7 @@ package pcvm
 import (
 	"context"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,13 +42,32 @@ func TestProviderPortRequirements(t *testing.T) {
 }
 
 func TestWebRequestSafety(t *testing.T) {
+	originalLookup := proxyLookupIP
+	t.Cleanup(func() { proxyLookupIP = originalLookup })
+	proxyLookupIP = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		switch host {
+		case "public.example":
+			return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}, nil
+		case "mixed.example":
+			return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}, {IP: net.ParseIP("10.0.0.8")}}, nil
+		case "internal.example", "metadata", "metadata.google.internal":
+			return []net.IPAddr{{IP: net.ParseIP("10.0.0.8")}}, nil
+		default:
+			return []net.IPAddr{{IP: net.ParseIP(host)}}, nil
+		}
+	}
 	home := t.TempDir()
 	cfg := Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 8080,
-		Request: Request{WebMode: "proxy", WebRoot: "public", UpstreamURL: "https://example.com"}}
+		Request: Request{WebMode: "proxy", WebRoot: "public", UpstreamURL: "https://public.example/path?ok=1"}}
 	if err := ValidateProviderRequest(catalogSpec(t, "nginx"), cfg); err != nil {
 		t.Fatal(err)
 	}
-	for _, upstream := range []string{"http://user:pass@example.com", "http://169.254.169.254/latest/meta-data", "ftp://example.com"} {
+	for _, upstream := range []string{
+		"http://user:pass@public.example", "ftp://public.example", "http://127.0.0.1", "http://[::1]",
+		"http://10.0.0.1", "http://172.16.0.1", "http://192.168.1.1", "http://169.254.169.254/latest/meta-data",
+		"http://100.64.0.1", "http://internal.example", "http://mixed.example",
+		"http://public.example/; } location /leak/ { alias /; autoindex on; #",
+	} {
 		cfg.Request.UpstreamURL = upstream
 		if err := ValidateProviderRequest(catalogSpec(t, "nginx"), cfg); err == nil {
 			t.Fatalf("unsafe upstream accepted: %s", upstream)
@@ -56,6 +76,32 @@ func TestWebRequestSafety(t *testing.T) {
 	cfg.Request.WebMode, cfg.Request.WebRoot = "static", "../escape"
 	if err := ValidateProviderRequest(catalogSpec(t, "nginx"), cfg); err == nil {
 		t.Fatal("escaping WEB_ROOT was accepted")
+	}
+}
+
+func TestCanonicalWebProxyRejectsDNSRebindingAndConfigMetacharacters(t *testing.T) {
+	originalLookup := proxyLookupIP
+	t.Cleanup(func() { proxyLookupIP = originalLookup })
+	proxyLookupIP = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		if host == "rebinding.example" {
+			return []net.IPAddr{{IP: net.ParseIP("192.168.50.1")}}, nil
+		}
+		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
+	}
+	if _, err := canonicalWebProxy("proxy", "https://rebinding.example"); err == nil {
+		t.Fatal("DNS name resolving to RFC1918 was accepted")
+	}
+	for _, raw := range []string{
+		"http://public.example/;include/etc/passwd", "http://public.example/{x}",
+		"http://public.example/$variable", "http://public.example/path#fragment",
+	} {
+		if _, err := canonicalWebProxy("proxy", raw); err == nil {
+			t.Fatalf("config metacharacters accepted in %q", raw)
+		}
+	}
+	want := "https://public.example:8443/api?x=1"
+	if got, err := canonicalWebProxy("proxy", want); err != nil || got != want {
+		t.Fatalf("canonical target=%q err=%v", got, err)
 	}
 }
 
@@ -88,7 +134,7 @@ func TestCaddyConfigIsHTTPHostAgnosticAndStateless(t *testing.T) {
 	}
 
 	proxy := caddyConfig("/extensions", "/public", "8080", "proxy", "http://upstream:3000")
-	if !strings.Contains(proxy, "\treverse_proxy http://upstream:3000\n") {
+	if !strings.Contains(proxy, "\treverse_proxy \"http://upstream:3000\"\n") {
 		t.Fatalf("Caddy proxy config is invalid:\n%s", proxy)
 	}
 }
@@ -154,7 +200,7 @@ func TestTModLoaderBuildKeepsDotnetDLLArg(t *testing.T) {
 	}
 	cfg := Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 7777,
 		Request: Request{MaxPlayers: 8, GameWorld: "World"}}
-	state := State{Provider: "tmodloader", Family: "game-tmodloader", WorkingDirectory: filepath.Join(home, "game"), Command: []string{runtime, dll}}
+	state := LaunchState{Provider: "tmodloader", WorkingDirectory: filepath.Join(home, "game"), Command: []string{runtime, dll}}
 	process, err := NewProvider(catalogSpec(t, "tmodloader")).BuildProcess(context.Background(), cfg, state)
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +267,7 @@ func TestNewProviderCatalogContracts(t *testing.T) {
 	for _, id := range newProviders {
 		spec := catalogSpec(t, id)
 		if len(spec.MenuPath) == 0 || len(spec.Architectures) == 0 || spec.Readiness.Mode == "" || spec.Control.Mode == "" {
-			t.Errorf("%s has incomplete schema-2 metadata: %+v", id, spec)
+			t.Errorf("%s has incomplete catalog metadata: %+v", id, spec)
 		}
 		if appid := wantSteam[id]; appid != "" && spec.Options["appid"] != appid {
 			t.Errorf("%s appid=%q, want %q", id, spec.Options["appid"], appid)

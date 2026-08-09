@@ -12,12 +12,8 @@ func TestMigrateLegacyControlAndRepairStatePaths(t *testing.T) {
 	legacy := filepath.Join(home, legacyControlName)
 	current := filepath.Join(home, ".pcvm")
 	state := State{
-		Provider:          "vanilla",
-		Command:           []string{filepath.Join(legacy, "cache", "runtimes", "java"), "-jar", filepath.Join(legacy, "managed", "server.jar")},
-		RuntimeExecutable: filepath.Join(legacy, "cache", "runtimes", "java"),
-		WorkingDirectory:  filepath.Join(legacy, "managed", "vanilla"),
-		Environment:       []string{"PATH=" + filepath.Join(legacy, "bin")},
-		Metadata:          map[string]string{"path": filepath.Join(legacy, "metadata")},
+		Provider: "vanilla",
+		Metadata: map[string]string{"path": filepath.Join(legacy, "metadata")},
 	}
 	if err := SaveState(legacy, state); err != nil {
 		t.Fatal(err)
@@ -46,10 +42,8 @@ func TestMigrateLegacyControlAndRepairStatePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range append(append([]string{repaired.RuntimeExecutable, repaired.WorkingDirectory}, repaired.Command...), repaired.Environment...) {
-		if strings.Contains(value, legacy) {
-			t.Fatalf("legacy path remains in state: %q", value)
-		}
+	if strings.Contains(repaired.Metadata["path"], legacy) {
+		t.Fatalf("legacy path remains in state metadata: %q", repaired.Metadata["path"])
 	}
 }
 

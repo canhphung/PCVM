@@ -470,7 +470,7 @@ runcmd:
 `, hostname, encode(autologin), encode(autologin), encode(fmt.Sprintf(readyUnit, console)), console)
 }
 
-func (p *catalogProvider) buildVMProcess(cfg Config, state State) (ProcessSpec, error) {
+func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState) (ProcessSpec, error) {
 	resources, err := calculateVMResources(cfg.Request, cfg.Policy, readHostCgroupLimits())
 	if err != nil {
 		return ProcessSpec{}, err
@@ -484,7 +484,16 @@ func (p *catalogProvider) buildVMProcess(cfg Config, state State) (ProcessSpec, 
 		return ProcessSpec{}, fmt.Errorf("read VM install metadata: %w", err)
 	}
 	var meta vmInstallMetadata
-	stateChecksum := firstNonEmpty(state.Artifact.SHA256, state.Artifact.SHA512)
+	stateChecksum := ""
+	for _, image := range p.spec.VMImages {
+		if image.Version == state.ResolvedVersion && image.Build == state.ResolvedBuild && image.Architecture == cfg.Arch {
+			stateChecksum = firstNonEmpty(image.SHA256, image.SHA512)
+			break
+		}
+	}
+	if stateChecksum == "" {
+		return ProcessSpec{}, fmt.Errorf("VM state does not reference an image pinned by the embedded catalog")
+	}
 	if err := json.Unmarshal(metaData, &meta); err != nil || meta.Provider != state.Provider || meta.Architecture != cfg.Arch ||
 		meta.Version != state.ResolvedVersion || meta.Build != state.ResolvedBuild || meta.Checksum != stateChecksum {
 		return ProcessSpec{}, fmt.Errorf("VM install metadata does not match state")
@@ -519,11 +528,11 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		"-drive", "if=pflash,format=raw,readonly=on,file=" + code,
 		"-drive", "if=pflash,format=raw,file=" + filepath.Join(vmDir, "uefi-vars.fd"),
 		"-drive", "if=none,file=" + filepath.Join(vmDir, "disk.qcow2") + ",format=qcow2,id=osdisk,cache=writeback,discard=unmap",
-		"-device", "virtio-blk-pci,drive=osdisk", "-device", "virtio-scsi-pci,id=scsi0",
+		"-device", "virtio-blk-pci,drive=osdisk,bootindex=1", "-device", "virtio-scsi-pci,id=scsi0",
 		"-drive", "if=none,media=cdrom,readonly=on,file=" + filepath.Join(vmDir, "seed.iso") + ",format=raw,id=seed",
-		"-device", "scsi-cd,drive=seed", "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0"}
+		"-device", "scsi-cd,drive=seed,bootindex=99", "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0"}
 	if cfg.Arch == "amd64" {
-		args = append([]string{"-machine", "q35"}, args...)
+		args = append([]string{"-machine", "q35", "-cpu", "max"}, args...)
 	} else {
 		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "max"}, args...)
 	}

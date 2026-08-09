@@ -17,7 +17,7 @@ func LoadState(control string) (*State, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
-	if state.Schema == 1 {
+	if state.Schema == 1 || state.Schema == 2 {
 		state.Schema = StateSchema
 		if err := writeJSONAtomic(filepath.Join(control, "state.json"), state); err != nil {
 			return nil, fmt.Errorf("migrate state schema: %w", err)

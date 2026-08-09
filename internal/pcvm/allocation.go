@@ -16,7 +16,7 @@ type configSetting struct {
 	Value string
 }
 
-func (a *App) syncPrimaryAllocation(state State) (bool, error) {
+func (a *App) syncPrimaryAllocation(state LaunchState) (bool, error) {
 	port := a.Config.AllocationPort
 	if port == 0 {
 		return false, nil

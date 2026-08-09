@@ -24,11 +24,26 @@ type HTTPClient struct {
 	Retries      int
 }
 
+var debianCloudRedirectHosts = csvSet("laotzu.ftp.acc.umu.se,chuangtzu.ftp.acc.umu.se")
+
 func NewHTTPClient() *HTTPClient {
 	hosts := csvSet("launchermeta.mojang.com,piston-meta.mojang.com,piston-data.mojang.com,fill.papermc.io,fill-data.papermc.io,api.purpurmc.org,ci.pufferfish.host,meta.fabricmc.net,maven.minecraftforge.net,maven.neoforged.net,ci.md-5.net,hub.spigotmc.org,repo.opencollab.dev,net-secondary.web.minecraft-services.net,www.minecraft.net,minecraft.net,minecraft.azureedge.net,api.github.com,github.com,raw.githubusercontent.com,objects.githubusercontent.com,release-assets.githubusercontent.com,pypi.org,files.pythonhosted.org,nodejs.org,python.org,www.python.org,download.oracle.com,api.adoptium.net,terraria.org,www.terraria.org,factorio.com,www.factorio.com,dl.factorio.com,steamcdn-a.akamaihd.net,github-releases.githubusercontent.com,builds.dotnet.microsoft.com,cloud-images.ubuntu.com,cloud.debian.org,repo.almalinux.org,download.rockylinux.org")
 	h := &HTTPClient{AllowedHosts: hosts, Retries: 3}
-	h.Client = &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(req *http.Request, _ []*http.Request) error { return h.validate(req.URL.String()) }}
+	h.Client = &http.Client{Timeout: 45 * time.Second, CheckRedirect: h.validateRedirect}
 	return h
+}
+
+func (h *HTTPClient) validateRedirect(req *http.Request, via []*http.Request) error {
+	if err := h.validate(req.URL.String()); err == nil {
+		return nil
+	}
+	if len(via) == 0 || strings.ToLower(via[0].URL.Hostname()) != "cloud.debian.org" {
+		return fmt.Errorf("download host %q is not allowed", req.URL.Hostname())
+	}
+	if req.URL.Scheme != "https" || req.URL.User != nil || !debianCloudRedirectHosts[strings.ToLower(req.URL.Hostname())] {
+		return fmt.Errorf("Debian cloud redirect host %q is not allowed", req.URL.Hostname())
+	}
+	return nil
 }
 
 func (h *HTTPClient) validate(raw string) error {

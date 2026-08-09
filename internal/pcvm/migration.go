@@ -73,14 +73,7 @@ func repairLegacyStatePaths(control, legacyRoot, currentRoot string) (bool, erro
 	if state == nil {
 		return false, nil
 	}
-	changed := replaceString(&state.RuntimeExecutable, legacyRoot, currentRoot)
-	changed = replaceString(&state.WorkingDirectory, legacyRoot, currentRoot) || changed
-	for i := range state.Command {
-		changed = replaceString(&state.Command[i], legacyRoot, currentRoot) || changed
-	}
-	for i := range state.Environment {
-		changed = replaceString(&state.Environment[i], legacyRoot, currentRoot) || changed
-	}
+	changed := false
 	for key, value := range state.Metadata {
 		replaced := strings.ReplaceAll(value, legacyRoot, currentRoot)
 		if replaced != value {
@@ -102,13 +95,4 @@ func repairLegacyStatePaths(control, legacyRoot, currentRoot string) (bool, erro
 		return false, err
 	}
 	return true, nil
-}
-
-func replaceString(value *string, old, replacement string) bool {
-	updated := strings.ReplaceAll(*value, old, replacement)
-	if updated == *value {
-		return false
-	}
-	*value = updated
-	return true
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,15 +24,32 @@ func (r *recordingSupervisor) Run(_ context.Context, s ProcessSpec, _ io.Reader,
 func TestInteractivePrefersExistingState(t *testing.T) {
 	home := t.TempDir()
 	control := home + "/.pcvm"
-	state := State{Provider: "paper", Family: "minecraft-java-bukkit", Command: []string{"existing-server"}, WorkingDirectory: home}
+	state := State{Provider: "bedrock", Family: "forged-family", ResolvedVersion: "1.21.0", ResolvedBuild: "release", Architecture: "amd64"}
 	if err := SaveState(control, state); err != nil {
+		t.Fatal(err)
+	}
+	var tampered map[string]any
+	if err := readJSON(filepath.Join(control, "state.json"), &tampered); err != nil {
+		t.Fatal(err)
+	}
+	tampered["command"] = []string{"/bin/sh", "-c", "id"}
+	tampered["environment"] = []string{"LD_PRELOAD=/tmp/evil.so"}
+	tampered["working_directory"] = "/tmp"
+	if err := writeJSONAtomic(filepath.Join(control, "state.json"), tampered); err != nil {
+		t.Fatal(err)
+	}
+	wantCommand := filepath.Join(control, "managed", "bedrock", "1.21.0", "bedrock_server")
+	if err := os.MkdirAll(filepath.Dir(wantCommand), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wantCommand, []byte("fixture"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := LoadCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive"}, Policy: Policy{AllowedSoftware: map[string]bool{"paper": true}}}
+	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive"}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
 	input := bytes.NewBufferString("invalid menu input")
 	app := NewApp(cfg, catalog, input, io.Discard, io.Discard)
 	supervisor := &recordingSupervisor{}
@@ -39,8 +57,8 @@ func TestInteractivePrefersExistingState(t *testing.T) {
 	if err := app.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !supervisor.called || supervisor.spec.Command[0] != "existing-server" {
-		t.Fatalf("state was not selected: %+v", supervisor.spec)
+	if !supervisor.called || supervisor.spec.Command[0] != wantCommand || strings.Contains(strings.Join(supervisor.spec.Command, " "), "/bin/sh") {
+		t.Fatalf("untrusted command was not rebuilt: %+v", supervisor.spec)
 	}
 }
 
@@ -48,16 +66,22 @@ func TestInteractiveMigratesLegacyStateBeforeStart(t *testing.T) {
 	home := t.TempDir()
 	legacy := filepath.Join(home, legacyControlName)
 	control := filepath.Join(home, ".pcvm")
-	legacyCommand := filepath.Join(legacy, "managed", "server")
-	state := State{Provider: "paper", Family: "minecraft-java-bukkit", Command: []string{legacyCommand}, WorkingDirectory: home, ReadyPatterns: []string{`Done \(`}}
+	state := State{Provider: "bedrock", Family: "minecraft-bedrock-vanilla", ResolvedVersion: "1.21.0", ResolvedBuild: "release", Architecture: "amd64"}
 	if err := SaveState(legacy, state); err != nil {
+		t.Fatal(err)
+	}
+	legacyCommand := filepath.Join(legacy, "managed", "bedrock", "1.21.0", "bedrock_server")
+	if err := os.MkdirAll(filepath.Dir(legacyCommand), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyCommand, []byte("fixture"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := LoadCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive"}, Policy: Policy{AllowedSoftware: map[string]bool{"paper": true}}}
+	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive"}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
 	var output bytes.Buffer
 	app := NewApp(cfg, catalog, bytes.NewReader(nil), &output, &output)
 	supervisor := &recordingSupervisor{}
@@ -65,7 +89,7 @@ func TestInteractiveMigratesLegacyStateBeforeStart(t *testing.T) {
 	if err := app.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantCommand := filepath.Join(control, "managed", "server")
+	wantCommand := filepath.Join(control, "managed", "bedrock", "1.21.0", "bedrock_server")
 	if !supervisor.called || supervisor.spec.Command[0] != wantCommand {
 		t.Fatalf("migrated command=%v, want %s", supervisor.spec.Command, wantCommand)
 	}
@@ -101,31 +125,55 @@ func TestPolicyBlocksProviderBeforeInstall(t *testing.T) {
 	}
 }
 
-func TestRunStateRepairsInvalidStoredReadyPattern(t *testing.T) {
+func TestRunStateIgnoresStoredProcessMetadata(t *testing.T) {
 	home := t.TempDir()
 	control := home + "/.pcvm"
 	catalog, err := LoadCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := State{Provider: "vanilla", Family: "minecraft-java-vanilla", Command: []string{"server"}, WorkingDirectory: home, ReadyPatterns: []string{"Done ("}}
-	if err := SaveState(control, state); err != nil {
+	state := State{Provider: "bedrock", Family: "forged", ResolvedVersion: "1.21.0", ResolvedBuild: "release", Architecture: "amd64"}
+	wantCommand := filepath.Join(control, "managed", "bedrock", "1.21.0", "bedrock_server")
+	if err := os.MkdirAll(filepath.Dir(wantCommand), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	app := NewApp(Config{Home: home, Control: control}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
-	supervisor := &recordingSupervisor{}
-	app.Supervisor = supervisor
-	if err := app.runState(context.Background(), state); err != nil {
+	if err := os.WriteFile(wantCommand, []byte("fixture"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if !supervisor.called || len(supervisor.spec.ReadyPatterns) == 0 || supervisor.spec.ReadyPatterns[0] != `Done \(` {
-		t.Fatalf("stored pattern was not repaired: %+v", supervisor.spec.ReadyPatterns)
-	}
-	repaired, err := LoadState(control)
+	app := NewApp(Config{Home: home, Control: control, Arch: "amd64", Request: Request{WebMode: "static"}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
+	launch, err := app.rebuildLaunchState(context.Background(), catalogSpec(t, "bedrock"), state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repaired == nil || len(repaired.ReadyPatterns) == 0 || repaired.ReadyPatterns[0] != `Done \(` {
-		t.Fatalf("repaired state was not persisted: %+v", repaired)
+	if launch.Command[0] != wantCommand || strings.Contains(strings.Join(launch.Environment, "\n"), "LD_PRELOAD") || launch.StopCommand != "stop" {
+		t.Fatalf("stored process metadata was trusted: %+v", launch)
+	}
+}
+
+func TestInteractiveStateCannotBypassProviderPolicy(t *testing.T) {
+	home := t.TempDir()
+	control := filepath.Join(home, ".pcvm")
+	if err := SaveState(control, State{Provider: "bedrock", ResolvedVersion: "1", ResolvedBuild: "release", Architecture: "amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, _ := LoadCatalog(nil)
+	app := NewApp(Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive"}, Policy: Policy{AllowedSoftware: map[string]bool{"paper": true}}}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
+	if err := app.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "disabled by host policy") {
+		t.Fatalf("tampered state bypassed policy: %v", err)
+	}
+}
+
+func TestRebuildLaunchStateRejectsPathTraversalTokens(t *testing.T) {
+	home := t.TempDir()
+	catalog, _ := LoadCatalog(nil)
+	app := NewApp(Config{Home: home, Control: filepath.Join(home, ".pcvm"), Arch: "amd64"}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
+	spec := catalogSpec(t, "bedrock")
+	for _, state := range []State{
+		{Provider: "bedrock", ResolvedVersion: "../bin/sh", ResolvedBuild: "release"},
+		{Provider: "bedrock", ResolvedVersion: "1.21", ResolvedBuild: `..\\evil`},
+	} {
+		if _, err := app.rebuildLaunchState(context.Background(), spec, state); err == nil {
+			t.Fatalf("accepted traversal state: %+v", state)
+		}
 	}
 }

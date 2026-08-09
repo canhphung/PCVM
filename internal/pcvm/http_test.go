@@ -63,3 +63,41 @@ func TestHTTPSAllowlist(t *testing.T) {
 		}
 	}
 }
+
+func TestDebianCloudRedirectAllowlist(t *testing.T) {
+	h := NewHTTPClient()
+	request := func(raw string) *http.Request {
+		req, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	origin := request("https://cloud.debian.org/images/cloud/trixie/image.qcow2")
+
+	for _, raw := range []string{
+		"https://laotzu.ftp.acc.umu.se/images/cloud/trixie/image.qcow2",
+		"https://chuangtzu.ftp.acc.umu.se/images/cloud/trixie/image.qcow2",
+	} {
+		if err := h.validateRedirect(request(raw), []*http.Request{origin}); err != nil {
+			t.Fatalf("rejected approved Debian mirror %q: %v", raw, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		target string
+		origin string
+	}{
+		{name: "arbitrary host", target: "https://attacker.invalid/image.qcow2", origin: origin.URL.String()},
+		{name: "wrong origin", target: "https://laotzu.ftp.acc.umu.se/image.qcow2", origin: "https://github.com/example/image.qcow2"},
+		{name: "insecure mirror", target: "http://laotzu.ftp.acc.umu.se/image.qcow2", origin: origin.URL.String()},
+		{name: "credentialed mirror", target: "https://user:pass@laotzu.ftp.acc.umu.se/image.qcow2", origin: origin.URL.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := h.validateRedirect(request(tc.target), []*http.Request{request(tc.origin)}); err == nil {
+				t.Fatalf("accepted redirect to %q from %q", tc.target, tc.origin)
+			}
+		})
+	}
+}

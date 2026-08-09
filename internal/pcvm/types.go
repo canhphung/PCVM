@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	StateSchema   = 2
+	StateSchema   = 3
 	CatalogSchema = 3
 )
 
@@ -146,17 +146,26 @@ type State struct {
 	ResolvedBuild     string            `json:"resolved_build"`
 	RuntimeKind       string            `json:"runtime_kind"`
 	RuntimeVersion    string            `json:"runtime_version"`
-	RuntimeExecutable string            `json:"runtime_executable"`
 	Architecture      string            `json:"architecture"`
 	Artifact          Artifact          `json:"artifact"`
-	Command           []string          `json:"command"`
-	Environment       []string          `json:"environment,omitempty"`
-	WorkingDirectory  string            `json:"working_directory"`
-	ReadyPatterns     []string          `json:"ready_patterns"`
-	StopCommand       string            `json:"stop_command"`
 	LastUpdateRequest string            `json:"last_update_request"`
 	InstalledAt       time.Time         `json:"installed_at"`
 	Metadata          map[string]string `json:"metadata,omitempty"`
+}
+
+// LaunchState is constructed exclusively from the embedded catalog, fixed
+// installation paths, and validated startup variables. It cannot be decoded
+// from the user-writable persisted State.
+type LaunchState struct {
+	Provider         string
+	ResolvedVersion  string
+	ResolvedBuild    string
+	RuntimeVersion   string
+	Command          []string
+	Environment      []string
+	WorkingDirectory string
+	ReadyPatterns    []string
+	StopCommand      string
 }
 
 type PendingSwitch struct {
@@ -211,7 +220,7 @@ type Provider interface {
 	Spec() ProviderSpec
 	Resolve(context.Context, Request, *HTTPClient) (Resolved, error)
 	Install(context.Context, InstallContext, Resolved) (Resolved, error)
-	BuildProcess(context.Context, Config, State) (ProcessSpec, error)
+	BuildProcess(context.Context, Config, LaunchState) (ProcessSpec, error)
 	CompareVersions(a, b string) int
 }
 
