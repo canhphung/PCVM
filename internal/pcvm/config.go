@@ -37,7 +37,7 @@ func ConfigFromEnv() (Config, error) {
 		}
 		limit = parsed
 	}
-	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,fabric,forge,neoforge,velocity,bungeecord,bedrock,pocketmine,powernukkitx,cloudburst-nukkit,endstone,cs2,gmod,l4d2,palworld,rust,rust-umod,project-zomboid,valheim,valheim-bepinex,7dtd,unturned,terraria,tmodloader,satisfactory,factorio,nginx,apache,caddy,node-bot,python-bot,lavalink,vm-ubuntu,vm-debian,vm-almalinux,vm-rocky"))
+	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,fabric,forge,neoforge,velocity,bungeecord,bedrock,pocketmine,powernukkitx,cloudburst-nukkit,endstone,cs2,gmod,l4d2,palworld,rust,rust-umod,project-zomboid,valheim,valheim-bepinex,7dtd,unturned,terraria,tmodloader,satisfactory,factorio,nginx,apache,caddy,node-bot,python-bot,lavalink,vm-ubuntu,vm-debian,vm-almalinux,vm-rocky,vm-alpine"))
 	gitHosts := csvSet(envDefault("GIT_ALLOWED_HOSTS", "github.com,gitlab.com,codeberg.org"))
 	request := Request{
 		Software: envDefault("SOFTWARE", "interactive"), Version: envDefault("SOFTWARE_VERSION", "latest"),
@@ -56,7 +56,8 @@ func ConfigFromEnv() (Config, error) {
 		TelnetPort: envPortDefault("TELNET_PORT", 8081), WebMode: envDefault("WEB_MODE", "static"),
 		WebRoot: envDefault("WEB_ROOT", "public"), UpstreamURL: os.Getenv("UPSTREAM_URL"),
 		VMMemoryMB: envDefault("VM_MEMORY_MB", "auto"), VMCPUs: envDefault("VM_CPUS", "auto"),
-		VMDiskGB: envInt("VM_DISK_GB", 10), VMHostname: envDefault("VM_HOSTNAME", "pcvm"),
+		VMDiskGB: envInt("VM_DISK_GB", 10), VMDiskCompression: strings.ToLower(envDefault("VM_DISK_COMPRESSION", "off")),
+		VMHostname: envDefault("VM_HOSTNAME", "pcvm"),
 	}
 	brandName := envDefault("BRAND_NAME", "PCVM")
 	if strings.EqualFold(strings.ReplaceAll(brandName, " ", ""), "smartmultiegg") {

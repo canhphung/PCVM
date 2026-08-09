@@ -35,6 +35,18 @@ func TestConfigRejectsUnsafeMirror(t *testing.T) {
 	}
 }
 
+func TestConfigReadsVMCompressionAndAllowsAlpineByDefault(t *testing.T) {
+	t.Setenv("PCVM_HOME", t.TempDir())
+	t.Setenv("VM_DISK_COMPRESSION", "ZSTD")
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Request.VMDiskCompression != "zstd" || !cfg.Policy.AllowedSoftware["vm-alpine"] {
+		t.Fatalf("unexpected VM config: compression=%q alpine=%v", cfg.Request.VMDiskCompression, cfg.Policy.AllowedSoftware["vm-alpine"])
+	}
+}
+
 func TestLegacyBrandNameNormalizesToPCVM(t *testing.T) {
 	t.Setenv("PCVM_HOME", t.TempDir())
 	t.Setenv("BRAND_NAME", "Smart MultiEgg")

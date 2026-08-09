@@ -21,6 +21,7 @@ const (
 	vmMinimumContainerMB = 1536
 	vmHostReserveMB      = 384
 	vmDefaultMemoryMB    = 1024
+	vmInstallSchema      = 2
 )
 
 var vmHostnamePattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
@@ -29,6 +30,9 @@ var vmFirmwareResolver = vmFirmware
 
 type vmInstallMetadata struct {
 	Schema       int    `json:"schema"`
+	ImageID      string `json:"image_id,omitempty"`
+	Variant      string `json:"variant,omitempty"`
+	Compression  string `json:"compression,omitempty"`
 	Provider     string `json:"provider"`
 	Version      string `json:"version"`
 	Build        string `json:"build"`
@@ -46,7 +50,7 @@ type vmResources struct {
 func resolveVMImage(spec ProviderSpec, req Request) (Artifact, error) {
 	images := make([]VMImageSpec, 0, len(spec.VMImages))
 	for _, image := range spec.VMImages {
-		if image.Architecture == req.Architecture && (req.Version == "" || req.Version == "latest" || image.Version == req.Version) {
+		if !image.Deprecated && image.Architecture == req.Architecture && (req.Version == "" || req.Version == "latest" || image.Version == req.Version) {
 			images = append(images, image)
 		}
 	}
@@ -75,22 +79,53 @@ func resolveVMImage(spec ProviderSpec, req Request) (Artifact, error) {
 	return Artifact{
 		URL: selected.URL, FileName: filepath.Base(selected.URL), Kind: "qcow2", SHA256: selected.SHA256,
 		SHA512: selected.SHA512, Version: selected.Version, Build: selected.Build,
-		Metadata: map[string]string{"architecture": selected.Architecture, "format": selected.Format},
+		Metadata: map[string]string{"architecture": selected.Architecture, "format": selected.Format,
+			"vm_image_id": selected.ID, "vm_image_variant": selected.Variant, "disk_compression": normalizeVMCompression(req.VMDiskCompression)},
 	}, nil
 }
 
-func validateVMRequest(cfg Config) error {
+func validateVMRequest(spec ProviderSpec, cfg Config) error {
 	if cfg.Request.AutoUpdate || strings.TrimSpace(cfg.Request.UpdateRequest) != "" {
 		return fmt.Errorf("VM providers do not support AUTO_UPDATE or UPDATE_REQUEST; update packages inside the guest OS")
 	}
 	if !vmHostnamePattern.MatchString(cfg.Request.VMHostname) {
 		return fmt.Errorf("VM_HOSTNAME must be a valid single-label Linux hostname")
 	}
-	if cfg.Request.VMDiskGB < 8 || cfg.Request.VMDiskGB > cfg.Policy.VMMaxDiskGB {
-		return fmt.Errorf("VM_DISK_GB must be between 8 and VM_MAX_DISK_GB (%d)", cfg.Policy.VMMaxDiskGB)
+	minimumDiskGB := (spec.MinimumDisk + 1023) / 1024
+	if minimumDiskGB < 2 {
+		minimumDiskGB = 2
+	}
+	if cfg.Request.VMDiskGB < minimumDiskGB || cfg.Request.VMDiskGB > cfg.Policy.VMMaxDiskGB {
+		return fmt.Errorf("VM_DISK_GB for %s must be between %d and VM_MAX_DISK_GB (%d)", spec.ID, minimumDiskGB, cfg.Policy.VMMaxDiskGB)
+	}
+	if _, err := validateVMCompression(cfg.Request.VMDiskCompression); err != nil {
+		return err
 	}
 	_, err := calculateVMResources(cfg.Request, cfg.Policy, readHostCgroupLimits())
 	return err
+}
+
+func normalizeVMCompression(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "off"
+	}
+	return value
+}
+
+func validateVMCompression(value string) (string, error) {
+	value = normalizeVMCompression(value)
+	if value != "off" && value != "zstd" {
+		return "", fmt.Errorf("VM_DISK_COMPRESSION must be off or zstd")
+	}
+	return value, nil
+}
+
+func stateVMCompression(state State) string {
+	if state.Artifact.Metadata == nil {
+		return "off"
+	}
+	return normalizeVMCompression(state.Artifact.Metadata["disk_compression"])
 }
 
 type cgroupLimits struct {
@@ -213,7 +248,7 @@ func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, reso
 	if ic.Artifact == "" {
 		return resolved, fmt.Errorf("VM cloud image was not prepared")
 	}
-	image, ok := findVMImage(p.spec, resolved.Artifact.Version, resolved.Artifact.Build, ic.Request.Architecture)
+	image, ok := findVMImageForArtifact(p.spec, resolved.Artifact, ic.Request.Architecture)
 	if !ok {
 		return resolved, fmt.Errorf("resolved VM image is not pinned by the embedded catalog")
 	}
@@ -221,16 +256,19 @@ func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, reso
 	if checksum == "" {
 		return resolved, fmt.Errorf("resolved VM image has no pinned checksum")
 	}
-	meta := vmInstallMetadata{Schema: 1, Provider: p.spec.ID, Version: resolved.Artifact.Version, Build: resolved.Artifact.Build,
+	compression, err := validateVMCompression(ic.Request.VMDiskCompression)
+	if err != nil {
+		return resolved, err
+	}
+	meta := vmInstallMetadata{Schema: vmInstallSchema, ImageID: image.ID, Variant: image.Variant, Compression: compression,
+		Provider: p.spec.ID, Version: resolved.Artifact.Version, Build: resolved.Artifact.Build,
 		Architecture: ic.Request.Architecture, Checksum: checksum,
 		DiskGB: ic.Request.VMDiskGB, Hostname: ic.Request.VMHostname}
 	finalDir := filepath.Join(ic.Home, "vm")
 	stageDir := filepath.Join(ic.ControlDir, "staging", "vm")
-	if image.SHA512 != "" && image.SHA256 == "" && strings.EqualFold(resolved.Artifact.SHA512, checksum) {
-		for _, dir := range []string{finalDir, stageDir} {
-			if _, err := repairLegacyVMMetadataFile(filepath.Join(dir, "install.json"), meta, resolved.Artifact.SHA256); err != nil {
-				return resolved, fmt.Errorf("repair legacy VM staging metadata: %w", err)
-			}
+	for _, dir := range []string{finalDir, stageDir} {
+		if _, err := migrateLegacyVMMetadataFile(filepath.Join(dir, "install.json"), meta, resolved.Artifact.SHA256); err != nil {
+			return resolved, fmt.Errorf("migrate legacy VM staging metadata: %w", err)
 		}
 	}
 	if exists, matches, err := vmDirectoryStatus(finalDir, meta); err != nil {
@@ -260,12 +298,12 @@ func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, reso
 		}
 	}
 	disk := filepath.Join(stageDir, "disk.qcow2")
-	if err := ensureVMStandaloneDisk(ctx, ic.Artifact, disk, meta.DiskGB, ic.Out, ic.Err); err != nil {
+	if err := ensureVMStandaloneDisk(ctx, ic.Artifact, disk, meta.DiskGB, meta.Compression, ic.Out, ic.Err); err != nil {
 		return resolved, err
 	}
 	seed := filepath.Join(stageDir, "seed.iso")
 	if info, err := os.Lstat(seed); os.IsNotExist(err) {
-		if err := createNoCloudSeed(ctx, stageDir, seed, meta.Hostname, meta.Architecture, ic.Out, ic.Err); err != nil {
+		if err := createNoCloudSeed(ctx, stageDir, seed, meta.Provider, meta.Hostname, meta.Architecture, ic.Out, ic.Err); err != nil {
 			return resolved, err
 		}
 	} else if err == nil && !info.Mode().IsRegular() {
@@ -297,6 +335,10 @@ func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, reso
 }
 
 func (p *catalogProvider) installedVMResult(ic InstallContext, resolved Resolved) Resolved {
+	if resolved.Artifact.Metadata == nil {
+		resolved.Artifact.Metadata = map[string]string{}
+	}
+	resolved.Artifact.Metadata["disk_compression"] = normalizeVMCompression(ic.Request.VMDiskCompression)
 	resolved.WorkDir = ic.Home
 	resolved.Command = []string{qemuBinary(ic.Request.Architecture)}
 	resolved.Environment = nil
@@ -329,9 +371,32 @@ func vmDirectoryStatus(dir string, want vmInstallMetadata) (bool, bool, error) {
 
 func findVMImage(spec ProviderSpec, version, build, arch string) (VMImageSpec, bool) {
 	for _, image := range spec.VMImages {
-		if image.Version == version && image.Build == build && image.Architecture == arch {
+		if !image.Deprecated && image.Version == version && image.Build == build && image.Architecture == arch {
 			return image, true
 		}
+	}
+	return VMImageSpec{}, false
+}
+
+func findVMImageForArtifact(spec ProviderSpec, artifact Artifact, arch string) (VMImageSpec, bool) {
+	wantedID := ""
+	if artifact.Metadata != nil {
+		wantedID = artifact.Metadata["vm_image_id"]
+	}
+	for _, image := range spec.VMImages {
+		if wantedID != "" && image.ID != wantedID {
+			continue
+		}
+		if image.Architecture != arch || image.Version != artifact.Version || image.Build != artifact.Build || image.URL != artifact.URL {
+			continue
+		}
+		if image.SHA512 != "" && !strings.EqualFold(image.SHA512, artifact.SHA512) {
+			continue
+		}
+		if image.SHA256 != "" && !strings.EqualFold(image.SHA256, artifact.SHA256) {
+			continue
+		}
+		return image, true
 	}
 	return VMImageSpec{}, false
 }
@@ -343,10 +408,8 @@ func pinnedVMImageChecksum(image VMImageSpec) string {
 	return strings.ToLower(firstNonEmpty(image.SHA512, image.SHA256))
 }
 
-func repairLegacyVMMetadataFile(path string, want vmInstallMetadata, legacySHA256 string) (bool, error) {
-	legacySHA256 = strings.ToLower(legacySHA256)
-	decoded, err := hex.DecodeString(legacySHA256)
-	if err != nil || len(decoded) != sha256.Size {
+func migrateLegacyVMMetadataFile(path string, want vmInstallMetadata, legacySHA256 string) (bool, error) {
+	if want.Compression != "off" {
 		return false, nil
 	}
 	info, err := os.Lstat(path)
@@ -364,35 +427,34 @@ func repairLegacyVMMetadataFile(path string, want vmInstallMetadata, legacySHA25
 		return false, err
 	}
 	var got vmInstallMetadata
-	if err := json.Unmarshal(data, &got); err != nil || !strings.EqualFold(got.Checksum, legacySHA256) {
+	if err := json.Unmarshal(data, &got); err != nil || got.Schema != 1 {
 		return false, nil
 	}
-	got.Checksum = want.Checksum
-	if got != want {
+	checksumMatches := strings.EqualFold(got.Checksum, want.Checksum)
+	legacySHA256 = strings.ToLower(legacySHA256)
+	if decoded, decodeErr := hex.DecodeString(legacySHA256); decodeErr == nil && len(decoded) == sha256.Size {
+		checksumMatches = checksumMatches || strings.EqualFold(got.Checksum, legacySHA256)
+	}
+	if !checksumMatches || got.Provider != want.Provider || got.Version != want.Version || got.Build != want.Build ||
+		got.Architecture != want.Architecture || got.DiskGB != want.DiskGB || got.Hostname != want.Hostname {
 		return false, nil
 	}
-	if err := writeJSONAtomic(path, got); err != nil {
+	if err := writeJSONAtomic(path, want); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// repairLegacyVMInstallMetadata repairs the v1.4.0/v1.4.1 Debian metadata bug:
-// Download added a computed SHA-256 and installVM accidentally persisted it
-// instead of Debian's catalog-pinned SHA-512. This migration changes only the
-// identity checksum; it never changes the disk, seed, firmware or process argv.
+// repairLegacyVMInstallMetadata migrates schema-1 install identity to schema 2.
+// It also repairs the v1.4.0/v1.4.1 Debian computed-SHA256 bug. The migration
+// never modifies the disk, seed, firmware or process argv.
 func repairLegacyVMInstallMetadata(home string, spec ProviderSpec, state State, arch string) (bool, error) {
-	image, ok := findVMImage(spec, state.ResolvedVersion, state.ResolvedBuild, arch)
-	if !ok || image.SHA512 == "" || image.SHA256 != "" {
+	image, ok := findVMImageForArtifact(spec, state.Artifact, arch)
+	if !ok {
 		return false, nil
 	}
 	pinned := pinnedVMImageChecksum(image)
 	legacySHA256 := strings.ToLower(state.Artifact.SHA256)
-	decoded, err := hex.DecodeString(legacySHA256)
-	if err != nil || len(decoded) != sha256.Size || !strings.EqualFold(state.Artifact.SHA512, pinned) ||
-		state.Artifact.URL != image.URL || state.Artifact.Version != image.Version || state.Artifact.Build != image.Build {
-		return false, nil
-	}
 	path := filepath.Join(home, "vm", "install.json")
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -412,10 +474,23 @@ func repairLegacyVMInstallMetadata(home string, spec ProviderSpec, state State, 
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return false, nil
 	}
-	if meta.Provider != spec.ID || meta.Version != image.Version || meta.Build != image.Build || meta.Architecture != arch ||
-		!strings.EqualFold(meta.Checksum, legacySHA256) {
+	if meta.Schema == vmInstallSchema {
 		return false, nil
 	}
+	checksumMatches := strings.EqualFold(meta.Checksum, pinned)
+	if image.SHA512 != "" && strings.EqualFold(state.Artifact.SHA512, pinned) {
+		if decoded, decodeErr := hex.DecodeString(legacySHA256); decodeErr == nil && len(decoded) == sha256.Size {
+			checksumMatches = checksumMatches || strings.EqualFold(meta.Checksum, legacySHA256)
+		}
+	}
+	if meta.Provider != spec.ID || meta.Version != image.Version || meta.Build != image.Build || meta.Architecture != arch ||
+		meta.Schema != 1 || !checksumMatches {
+		return false, nil
+	}
+	meta.Schema = vmInstallSchema
+	meta.ImageID = image.ID
+	meta.Variant = image.Variant
+	meta.Compression = "off"
 	meta.Checksum = pinned
 	if err := writeJSONAtomic(path, meta); err != nil {
 		return false, err
@@ -423,7 +498,7 @@ func repairLegacyVMInstallMetadata(home string, spec ProviderSpec, state State, 
 	return true, nil
 }
 
-func ensureVMStandaloneDisk(ctx context.Context, source, disk string, diskGB int, stdout, stderr anyWriter) error {
+func ensureVMStandaloneDisk(ctx context.Context, source, disk string, diskGB int, compression string, stdout, stderr anyWriter) error {
 	if info, err := os.Lstat(disk); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("staged VM disk must be a regular file")
@@ -443,7 +518,12 @@ func ensureVMStandaloneDisk(ctx context.Context, source, disk string, diskGB int
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := vmRunTool(ctx, stdout, stderr, "qemu-img", "convert", "-f", "qcow2", "-O", "qcow2", source, disk); err != nil {
+	convertArgs := []string{"convert", "-f", "qcow2", "-O", "qcow2"}
+	if compression == "zstd" {
+		convertArgs = append(convertArgs, "-c", "-o", "compat=1.1,compression_type=zstd")
+	}
+	convertArgs = append(convertArgs, source, disk)
+	if err := vmRunTool(ctx, stdout, stderr, "qemu-img", convertArgs...); err != nil {
 		_ = os.Remove(disk)
 		return fmt.Errorf("convert VM disk: %w", err)
 	}
@@ -492,13 +572,13 @@ func runVMTool(ctx context.Context, stdout, stderr anyWriter, name string, args 
 	return cmd.Run()
 }
 
-func createNoCloudSeed(ctx context.Context, stageDir, output, hostname, arch string, stdout, stderr anyWriter) error {
+func createNoCloudSeed(ctx context.Context, stageDir, output, provider, hostname, arch string, stdout, stderr anyWriter) error {
 	seedDir := filepath.Join(stageDir, "seed-data")
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
 		return err
 	}
 	defer os.RemoveAll(seedDir)
-	userData := cloudInitUserData(hostname, arch)
+	userData := cloudInitUserDataForProvider(provider, hostname, arch)
 	metaData := fmt.Sprintf("instance-id: pcvm-%s\nlocal-hostname: %s\n", hostname, hostname)
 	if err := os.WriteFile(filepath.Join(seedDir, "user-data"), []byte(userData), 0o600); err != nil {
 		return err
@@ -583,6 +663,83 @@ runcmd:
 `, hostname, encode(autologin), encode(autologin), encode(fmt.Sprintf(readyUnit, console)), console)
 }
 
+func cloudInitUserDataForProvider(provider, hostname, arch string) string {
+	if provider == "vm-alpine" {
+		return alpineCloudInitUserData(hostname, arch)
+	}
+	return cloudInitUserData(hostname, arch)
+}
+
+func alpineCloudInitUserData(hostname, arch string) string {
+	console := "ttyS0"
+	if arch == "arm64" {
+		console = "ttyAMA0"
+	}
+	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
+	autologin := "#!/bin/sh\nexec /bin/login -f pcvm\n"
+	sudoCompat := `#!/bin/sh
+if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
+    shift
+    exec /usr/bin/doas -s "$@"
+fi
+exec /usr/bin/doas "$@"
+`
+	ready := "#!/bin/sh\necho \"[PCVM-GUEST] READY\" > /dev/console\n"
+	firstBoot := fmt.Sprintf(`#!/bin/sh
+set -eu
+console=%s
+line="$console::respawn:/sbin/getty -n -l /usr/local/sbin/pcvm-autologin -L $console 115200 vt100"
+if grep -q "^$console::" /etc/inittab; then
+    sed -i "\\|^$console::|c\\$line" /etc/inittab
+else
+    printf '%%s\n' "$line" >> /etc/inittab
+fi
+rc-update add local default
+passwd -l root >/dev/null 2>&1 || true
+passwd -l alpine >/dev/null 2>&1 || true
+kill -HUP 1
+/usr/local/sbin/pcvm-ready
+`, console)
+	return fmt.Sprintf(`#cloud-config
+hostname: %s
+manage_etc_hosts: true
+disable_root: true
+ssh_pwauth: false
+users:
+  - name: pcvm
+    gecos: PCVM Console User
+    groups: [wheel]
+    shell: /bin/ash
+    lock_passwd: true
+write_files:
+  - path: /etc/doas.d/pcvm.conf
+    permissions: '0400'
+    content: permit nopass pcvm as root
+  - path: /usr/local/sbin/pcvm-autologin
+    permissions: '0755'
+    encoding: b64
+    content: %s
+  - path: /usr/local/bin/sudo
+    permissions: '0755'
+    encoding: b64
+    content: %s
+  - path: /usr/local/sbin/pcvm-ready
+    permissions: '0755'
+    encoding: b64
+    content: %s
+  - path: /etc/local.d/pcvm-ready.start
+    permissions: '0755'
+    encoding: b64
+    content: %s
+  - path: /usr/local/sbin/pcvm-firstboot
+    permissions: '0755'
+    encoding: b64
+    content: %s
+runcmd:
+  - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
+`, hostname, encode(autologin), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))
+}
+
 func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState) (ProcessSpec, error) {
 	resources, err := calculateVMResources(cfg.Request, cfg.Policy, readHostCgroupLimits())
 	if err != nil {
@@ -597,13 +754,12 @@ func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState) (Process
 		return ProcessSpec{}, fmt.Errorf("read VM install metadata: %w", err)
 	}
 	var meta vmInstallMetadata
-	image, found := findVMImage(p.spec, state.ResolvedVersion, state.ResolvedBuild, cfg.Arch)
-	stateChecksum := pinnedVMImageChecksum(image)
-	if !found || stateChecksum == "" {
+	if state.VMImageID == "" || state.VMImageChecksum == "" {
 		return ProcessSpec{}, fmt.Errorf("VM state does not reference an image pinned by the embedded catalog")
 	}
-	if err := json.Unmarshal(metaData, &meta); err != nil || meta.Provider != state.Provider || meta.Architecture != cfg.Arch ||
-		meta.Version != state.ResolvedVersion || meta.Build != state.ResolvedBuild || meta.Checksum != stateChecksum {
+	if err := json.Unmarshal(metaData, &meta); err != nil || meta.Schema != vmInstallSchema || meta.Provider != state.Provider || meta.Architecture != cfg.Arch ||
+		meta.Version != state.ResolvedVersion || meta.Build != state.ResolvedBuild || meta.ImageID != state.VMImageID ||
+		meta.Variant != state.VMImageVariant || !strings.EqualFold(meta.Checksum, state.VMImageChecksum) || meta.Compression != state.VMDiskCompression {
 		return ProcessSpec{}, fmt.Errorf("VM install metadata does not match state")
 	}
 	code, _, err := vmFirmwareResolver(cfg.Arch)

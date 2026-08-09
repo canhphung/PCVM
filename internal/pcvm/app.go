@@ -84,6 +84,9 @@ func (a *App) Run(ctx context.Context) error {
 	if state != nil && spec.Installer == "qemu-vm" && (req.Version != state.RequestedVersion || req.Build != state.RequestedBuild) {
 		needsResolve = true
 	}
+	if state != nil && spec.Installer == "qemu-vm" && normalizeVMCompression(req.VMDiskCompression) != stateVMCompression(*state) {
+		needsResolve = true
+	}
 	if !needsResolve {
 		return a.runState(ctx, *state)
 	}
@@ -144,10 +147,36 @@ func EvaluateTransition(state *State, target Provider, resolved Resolved) (bool,
 	if target.Spec().Installer == "qemu-vm" && (state.ResolvedVersion != resolved.Artifact.Version || state.ResolvedBuild != resolved.Artifact.Build) {
 		return true, "changing a VM distro version or image build requires reset"
 	}
+	if target.Spec().Installer == "qemu-vm" && vmArtifactIdentityChanged(state.Artifact, resolved.Artifact) {
+		return true, "changing a VM image variant requires reset"
+	}
+	if target.Spec().Installer == "qemu-vm" && stateVMCompression(*state) != normalizeVMCompression(resolved.Artifact.Metadata["disk_compression"]) {
+		return true, "changing VM disk compression requires reset"
+	}
 	if state.Provider == target.Spec().ID && target.CompareVersions(resolved.Artifact.Version, state.ResolvedVersion) < 0 {
 		return true, "downgrade requires reset"
 	}
 	return false, ""
+}
+
+func vmArtifactIdentityChanged(current, target Artifact) bool {
+	currentID, targetID := "", ""
+	if current.Metadata != nil {
+		currentID = current.Metadata["vm_image_id"]
+	}
+	if target.Metadata != nil {
+		targetID = target.Metadata["vm_image_id"]
+	}
+	if currentID != "" && targetID != "" && currentID != targetID {
+		return true
+	}
+	if current.URL != "" && target.URL != "" && current.URL != target.URL {
+		return true
+	}
+	if current.SHA512 != "" && target.SHA512 != "" && !strings.EqualFold(current.SHA512, target.SHA512) {
+		return true
+	}
+	return current.SHA256 != "" && target.SHA256 != "" && !strings.EqualFold(current.SHA256, target.SHA256)
 }
 
 func (a *App) prepare(ctx context.Context, p Provider, req Request, resolved Resolved) (Resolved, InstallContext, error) {
@@ -303,7 +332,7 @@ func (a *App) runState(ctx context.Context, state State) error {
 			return fmt.Errorf("repair legacy VM install metadata: %w", err)
 		}
 		if repaired {
-			a.Log.Printf("repaired legacy %s VM checksum metadata", spec.ID)
+			a.Log.Printf("migrated legacy %s VM install metadata", spec.ID)
 		}
 	}
 	launch, err := a.rebuildLaunchState(ctx, spec, state)

@@ -7,7 +7,7 @@ on:
         description: VM provider ID
         required: true
         type: choice
-        options: [vm-ubuntu, vm-debian, vm-almalinux, vm-rocky]
+        options: [vm-ubuntu, vm-debian, vm-almalinux, vm-rocky, vm-alpine]
       version:
         description: Distro version from the embedded catalog
         required: true
@@ -34,23 +34,25 @@ jobs:
           ARCH: ${{ inputs.architecture }}
         run: |
           jq -e --arg p "$PROVIDER" --arg v "$VERSION" --arg a "$ARCH" \
-            '.providers[] | select(.id == $p) | .vm_images[] | select(.version == $v and .architecture == $a)' \
+            '.providers[] | select(.id == $p) | .vm_images[] | select(.deprecated != true and .version == $v and .architecture == $a)' \
             internal/pcvm/catalog.json >/dev/null
       - name: Build native PCVM image
-        run: docker build --build-arg VERSION=1.4.2 -t pcvm:full-vm-smoke .
+        run: docker build --build-arg VERSION=1.5.0 -t pcvm:full-vm-smoke .
       - name: Boot, use serial console, reboot and power down
         env:
           PROVIDER: ${{ inputs.provider }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          disk_gb=8
+          [ "$PROVIDER" != vm-alpine ] || disk_gb=2
           docker volume create pcvm-vm-smoke >/dev/null
           cleanup() { docker rm -f pcvm-vm >/dev/null 2>&1 || true; docker volume rm pcvm-vm-smoke >/dev/null 2>&1 || true; }
           trap cleanup EXIT
           docker run -d -i --name pcvm-vm --memory 3072m --cpus 2 --read-only \
             --security-opt no-new-privileges --cap-drop ALL --tmpfs /tmp:rw,nosuid,nodev,size=256m \
             -v pcvm-vm-smoke:/home/container -e CLEAR_CONSOLE=0 -e SOFTWARE="$PROVIDER" \
-            -e SOFTWARE_VERSION="$VERSION" -e SOFTWARE_BUILD=latest -e VM_DISK_GB=8 \
+            -e SOFTWARE_VERSION="$VERSION" -e SOFTWARE_BUILD=latest -e VM_DISK_GB="$disk_gb" \
             pcvm:full-vm-smoke >/dev/null
           for _ in $(seq 1 900); do
             docker logs pcvm-vm 2>&1 | grep -Fq '[PCVM] READY' && break
@@ -58,8 +60,10 @@ jobs:
             sleep 1
           done
           test "$(docker logs pcvm-vm 2>&1 | grep -Fc '[PCVM] READY')" -ge 1
-          timeout 20 sh -c "printf 'uname -a\nsudo -n true\nsudo reboot\n' | docker attach --sig-proxy=false pcvm-vm" > /tmp/serial.log 2>&1 || true
+          printf '%s\n' 'uname -a' 'sudo -n id -u' 'sudo -i -c "id -u"' 'sudo reboot' > /tmp/serial-input
+          timeout 20 docker attach --sig-proxy=false pcvm-vm < /tmp/serial-input > /tmp/serial.log 2>&1 || true
           grep -Eq 'Linux .* (x86_64|aarch64)' /tmp/serial.log
+          grep -Eq '^0\r?$' /tmp/serial.log
           for _ in $(seq 1 900); do
             test "$(docker logs pcvm-vm 2>&1 | grep -Fc '[PCVM] READY')" -ge 2 && break
             test "$(docker inspect -f '{{.State.Running}}' pcvm-vm)" = true

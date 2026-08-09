@@ -8,7 +8,7 @@ import (
 
 const (
 	StateSchema   = 3
-	CatalogSchema = 3
+	CatalogSchema = 4
 )
 
 type Catalog struct {
@@ -40,6 +40,9 @@ type ProviderSpec struct {
 }
 
 type VMImageSpec struct {
+	ID           string `json:"image_id"`
+	Variant      string `json:"variant"`
+	Deprecated   bool   `json:"deprecated,omitempty"`
 	Version      string `json:"version"`
 	Build        string `json:"build"`
 	Architecture string `json:"architecture"`
@@ -81,44 +84,45 @@ type RuntimePackSpec struct {
 }
 
 type Request struct {
-	Software       string
-	Version        string
-	Build          string
-	RuntimeVersion string
-	AutoUpdate     bool
-	UpdateRequest  string
-	AcceptEULA     bool
-	ResetConfirm   string
-	SourceMode     string
-	GitURL         string
-	GitBranch      string
-	EntryFile      string
-	AppArgs        string
-	AppReady       string
-	ServerName     string
-	ServerPassword string
-	AdminPassword  string
-	MaxPlayers     int
-	GameMap        string
-	GameWorld      string
-	GameSeed       string
-	GameExtraArgs  string
-	SteamGSLT      string
-	QueryPort      int
-	SteamPort      int
-	ReliablePort   int
-	GamePort2      int
-	GamePort3      int
-	RCONPort       int
-	TelnetPort     int
-	WebMode        string
-	WebRoot        string
-	UpstreamURL    string
-	Architecture   string
-	VMMemoryMB     string
-	VMCPUs         string
-	VMDiskGB       int
-	VMHostname     string
+	Software          string
+	Version           string
+	Build             string
+	RuntimeVersion    string
+	AutoUpdate        bool
+	UpdateRequest     string
+	AcceptEULA        bool
+	ResetConfirm      string
+	SourceMode        string
+	GitURL            string
+	GitBranch         string
+	EntryFile         string
+	AppArgs           string
+	AppReady          string
+	ServerName        string
+	ServerPassword    string
+	AdminPassword     string
+	MaxPlayers        int
+	GameMap           string
+	GameWorld         string
+	GameSeed          string
+	GameExtraArgs     string
+	SteamGSLT         string
+	QueryPort         int
+	SteamPort         int
+	ReliablePort      int
+	GamePort2         int
+	GamePort3         int
+	RCONPort          int
+	TelnetPort        int
+	WebMode           string
+	WebRoot           string
+	UpstreamURL       string
+	Architecture      string
+	VMMemoryMB        string
+	VMCPUs            string
+	VMDiskGB          int
+	VMDiskCompression string
+	VMHostname        string
 }
 
 type Policy struct {
@@ -157,15 +161,19 @@ type State struct {
 // installation paths, and validated startup variables. It cannot be decoded
 // from the user-writable persisted State.
 type LaunchState struct {
-	Provider         string
-	ResolvedVersion  string
-	ResolvedBuild    string
-	RuntimeVersion   string
-	Command          []string
-	Environment      []string
-	WorkingDirectory string
-	ReadyPatterns    []string
-	StopCommand      string
+	Provider          string
+	ResolvedVersion   string
+	ResolvedBuild     string
+	RuntimeVersion    string
+	VMImageID         string
+	VMImageVariant    string
+	VMImageChecksum   string
+	VMDiskCompression string
+	Command           []string
+	Environment       []string
+	WorkingDirectory  string
+	ReadyPatterns     []string
+	StopCommand       string
 }
 
 type PendingSwitch struct {

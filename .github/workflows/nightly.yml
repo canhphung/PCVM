@@ -61,7 +61,10 @@ jobs:
                   manifest_name = "SHA512SUMS" if algorithm == "sha512" else "SHA256SUMS"
                   if "repo.almalinux.org" in url or "download.rockylinux.org" in url:
                       manifest_name = "CHECKSUM"
-                  manifest_url = directory + "/" + manifest_name
+                  if "dl-cdn.alpinelinux.org" in url:
+                      manifest_url = url + ".sha512"
+                  else:
+                      manifest_url = directory + "/" + manifest_name
                   if manifest_url not in cache:
                       request = urllib.request.Request(manifest_url, headers={"User-Agent": "PCVM nightly"})
                       with urllib.request.urlopen(request, timeout=90) as response:
@@ -73,8 +76,10 @@ jobs:
                       rf"(?mi)^([0-9a-f]{{{length}}})\s+[* ]?{escaped}\s*$",
                       rf"(?mi)^{algorithm.upper()}\s*\({escaped}\)\s*=\s*([0-9a-f]{{{length}}})\s*$",
                   ]
+                  if "dl-cdn.alpinelinux.org" in url:
+                      patterns.append(rf"(?mi)^([0-9a-f]{{{length}}})\s*$")
                   found = next((match.group(1).lower() for pattern in patterns if (match := re.search(pattern, cache[manifest_url]))), None)
                   if found != expected:
                       raise SystemExit(f"checksum manifest mismatch for {provider['id']} {image['version']} {image['architecture']}")
-          print("verified 16 immutable VM image checksums")
+          print("verified 24 immutable VM image checksums")
           PY

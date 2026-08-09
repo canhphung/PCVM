@@ -15,6 +15,7 @@ import (
 var embeddedCatalog []byte
 
 var validID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+var validVMImageID = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,95}$`)
 
 func LoadCatalog(extraRuntimeManifest []byte) (Catalog, error) {
 	var catalog Catalog
@@ -39,6 +40,7 @@ func (c Catalog) Validate() error {
 		return fmt.Errorf("unsupported catalog schema %d", c.Schema)
 	}
 	seen := map[string]bool{}
+	vmImageIDs := map[string]bool{}
 	for _, p := range c.Providers {
 		if !validID.MatchString(p.ID) {
 			return fmt.Errorf("invalid provider id %q", p.ID)
@@ -108,23 +110,31 @@ func (c Catalog) Validate() error {
 			}
 		}
 		if p.Installer == "qemu-vm" {
-			if p.Resolver != "vm-image" || p.Runtime != "native" || len(p.VMImages) != 4 {
+			if p.Resolver != "vm-image" || p.Runtime != "native" || len(p.VMImages) < 4 {
 				return fmt.Errorf("provider %q has incomplete VM metadata", p.ID)
 			}
-			images := map[string]bool{}
+			activeImages := map[string]bool{}
 			versions := map[string]map[string]bool{}
 			for _, image := range p.VMImages {
 				key := image.Version + "/" + image.Architecture
 				u, err := url.Parse(image.URL)
-				if image.Version == "" || image.Build == "" || image.Format != "qcow2" || images[key] ||
+				if !validVMImageID.MatchString(image.ID) || !validID.MatchString(image.Variant) || vmImageIDs[image.ID] ||
+					image.Version == "" || image.Build == "" || image.Format != "qcow2" ||
 					(image.Architecture != "amd64" && image.Architecture != "arm64") || !contains(p.Architectures, image.Architecture) || err != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !validVMImageHost(u.Hostname()) ||
-					strings.Contains(strings.ToLower(image.URL), "/latest/") || !strings.Contains(image.URL, image.Build) {
+					strings.Contains(strings.ToLower(image.URL), "/latest/") || !immutableVMBuildInURL(image.URL, image.Build) {
 					return fmt.Errorf("provider %q has invalid immutable VM image %q", p.ID, key)
 				}
 				if (!validHexDigest(image.SHA256, 64) || image.SHA512 != "") && (!validHexDigest(image.SHA512, 128) || image.SHA256 != "") {
 					return fmt.Errorf("provider %q VM image %q must have exactly one valid checksum", p.ID, key)
 				}
-				images[key] = true
+				vmImageIDs[image.ID] = true
+				if image.Deprecated {
+					continue
+				}
+				if activeImages[key] {
+					return fmt.Errorf("provider %q has duplicate active VM image %q", p.ID, key)
+				}
+				activeImages[key] = true
 				if versions[image.Version] == nil {
 					versions[image.Version] = map[string]bool{}
 				}
@@ -168,11 +178,23 @@ func validHexDigest(value string, length int) bool {
 
 func validVMImageHost(host string) bool {
 	switch strings.ToLower(host) {
-	case "cloud-images.ubuntu.com", "cloud.debian.org", "repo.almalinux.org", "download.rockylinux.org":
+	case "cloud-images.ubuntu.com", "cloud.debian.org", "repo.almalinux.org", "download.rockylinux.org", "dl-cdn.alpinelinux.org":
 		return true
 	default:
 		return false
 	}
+}
+
+func immutableVMBuildInURL(rawURL, build string) bool {
+	if strings.Contains(rawURL, build) {
+		return true
+	}
+	for _, token := range strings.Split(build, "-") {
+		if token == "" || !strings.Contains(rawURL, token) {
+			return false
+		}
+	}
+	return true
 }
 
 func validMenuPath(path []string) bool {
@@ -190,7 +212,7 @@ func validMenuPath(path []string) bool {
 	}
 	if len(path) == 2 && path[0] == "vms" {
 		switch path[1] {
-		case "debian-family", "enterprise-linux":
+		case "debian-family", "enterprise-linux", "lightweight-linux":
 			return true
 		}
 	}

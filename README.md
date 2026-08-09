@@ -1,6 +1,6 @@
 # PCVM
 
-PCVM v1.4.2 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 39 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
+PCVM v1.5.0 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 40 providers without modifying Panel or Wings. Its Go launcher owns provider selection, checksum-verified runtimes and cloud images, updates, state, safe switching, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
 ## Provider catalog
 
@@ -14,16 +14,17 @@ PCVM v1.4.2 is one `PTDL_v2` Pterodactyl Egg that installs and runs one of 39 pr
 | Games — Sandbox & Automation | Terraria, tModLoader, Satisfactory, Factorio |
 | Web Servers | Nginx, Apache HTTP Server, Caddy |
 | Applications & Bots | Node.js bot, Python bot, Lavalink |
-| Virtual Machines â€” Debian Family | Ubuntu Server 24.04/26.04 LTS, Debian 12/13 |
+| Virtual Machines â€” Lightweight Linux | Alpine Linux 3.23/3.24 |
+| Virtual Machines â€” Debian Family | Ubuntu Minimal 24.04/26.04 LTS, Debian 12/13 |
 | Virtual Machines â€” Enterprise Linux | AlmaLinux 9/10, Rocky Linux 9/10 |
 
 All game providers are AMD64-only. Web, Minecraft, application and VM providers remain available on ARM64 when their embedded artifact metadata supports it. VM guests always match the host architecture. Endstone is AMD64-only because its official wheel is x86-64; PowerNukkitX and Cloudburst Nukkit support both PCVM architectures. LeviLamina is not listed because its upstream currently publishes Windows-only builds, while PCVM does not include Wine. Waterfall is excluded because upstream ended maintenance. One server runs one provider at a time.
 
 ## Install on Pterodactyl
 
-1. Download `egg-pcvm-1.4.2.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+1. Download `egg-pcvm-1.5.0.json` from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
 2. Import it into a Nest on Pterodactyl 1.12.x.
-3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.4.2` image.
+3. Keep the release-pinned `ghcr.io/canhphung/pcvm:1.5.0` image.
 4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
 
 The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable startup command is:
@@ -80,13 +81,13 @@ After the exact confirmation, the launcher resets only canonical `/home/containe
 
 ## Linux virtual machines
 
-Ubuntu, Debian, AlmaLinux and Rocky Linux run as real same-architecture QEMU system VMs using unprivileged multi-threaded TCG. No KVM, TAP, bridge, device passthrough or Wings changes are required. QEMU user-mode NAT provides outbound DHCP, DNS and HTTP, but v1.4 intentionally exposes no inbound guest port. The Pterodactyl console is the guest serial console; cloud-init creates the auto-login `pcvm` user with passwordless `sudo`.
+Ubuntu Minimal, Debian, AlmaLinux, Rocky Linux and Alpine Linux run as real same-architecture QEMU system VMs using unprivileged multi-threaded TCG. No KVM, TAP, bridge, device passthrough or Wings changes are required. QEMU user-mode NAT provides outbound DHCP, DNS and HTTP, but v1.5 intentionally exposes no inbound guest port. The Pterodactyl console is the guest serial console; cloud-init creates the auto-login `pcvm` user with passwordless administration. Alpine uses OpenRC and `doas`, with a compatibility wrapper for common `sudo` commands.
 
-The first boot downloads an immutable official cloud image, verifies SHA-256 or SHA-512, converts it to an independent sparse `vm/disk.qcow2`, resizes and checks it, and creates a NoCloud seed plus writable UEFI variables through a staged atomic install. The base image cache is then removed. `VM_MEMORY_MB`, `VM_CPUS`, `VM_DISK_GB` and `VM_HOSTNAME` control initial resources; admin caps are `VM_MAX_MEMORY_MB`, `VM_MAX_CPUS` and `VM_MAX_DISK_GB`.
+The first boot downloads an immutable official cloud image, verifies SHA-256 or SHA-512, converts it to an independent sparse `vm/disk.qcow2`, resizes and checks it, and creates a NoCloud seed plus writable UEFI variables through a staged atomic install. The base image cache is then removed. `VM_DISK_COMPRESSION=zstd` optionally compresses initial QCOW2 clusters; it is off by default because decompression consumes TCG CPU and rewritten clusters become uncompressed. Alpine accepts a 2 GiB virtual disk, while the other VM providers require at least 8 GiB. `VM_MEMORY_MB`, `VM_CPUS`, `VM_DISK_GB` and `VM_HOSTNAME` control initial resources; admin caps are `VM_MAX_MEMORY_MB`, `VM_MAX_CPUS` and `VM_MAX_DISK_GB`.
 
-PCVM v1.4.2 automatically repairs the checksum identity written by v1.4.0/v1.4.1 Debian installs, including interrupted staging. The migration preserves `vm/disk.qcow2`, the NoCloud seed, UEFI variables, disk size and hostname; unrelated metadata mismatches remain blocked.
+PCVM v1.5.0 migrates VM install metadata to schema 2 and automatically repairs the checksum identity written by v1.4.0/v1.4.1 Debian installs, including interrupted staging. Existing Ubuntu Standard images remain embedded as deprecated boot-only identities, so upgrading PCVM does not force a reset. Migration preserves `vm/disk.qcow2`, the NoCloud seed, UEFI variables, disk size and hostname; unrelated metadata mismatches remain blocked.
 
-VM image updates never modify an existing disk. Changing distro, version or pinned build requires the reset nonce flow. `AUTO_UPDATE` and `UPDATE_REQUEST` are rejected for VM providers; update packages from inside the guest. Panel stop uses QMP ACPI powerdown and waits up to 90 seconds. Back up `vm/disk.qcow2` only while the VM is stopped; snapshots are not supported in v1.4.
+VM image updates never modify an existing disk. Changing distro, version, pinned build or disk compression requires the reset nonce flow. `AUTO_UPDATE` and `UPDATE_REQUEST` are rejected for VM providers; update packages from inside the guest. Panel stop uses QMP ACPI powerdown and waits up to 90 seconds. Back up `vm/disk.qcow2` only while the VM is stopped; snapshots, shared backing images and online compaction are not supported in v1.5.
 
 ## Runtimes and downloads
 
@@ -111,7 +112,7 @@ The release Egg defines the full public interface. Main groups are:
 - Games: `SERVER_NAME`, `SERVER_PASSWORD`, `ADMIN_PASSWORD`, `MAX_PLAYERS`, `GAME_MAP`, `GAME_WORLD`, `GAME_SEED`, `GAME_EXTRA_ARGS`, `STEAM_GSLT` and the port variables above.
 - Web: `WEB_MODE`, `WEB_ROOT`, `UPSTREAM_URL`.
 - Bots: `SOURCE_MODE`, `GIT_URL`, `GIT_BRANCH`, `ENTRY_FILE`, `APP_ARGS`, `APP_READY_PATTERN`.
-- VMs: `VM_MEMORY_MB`, `VM_CPUS`, `VM_DISK_GB`, `VM_HOSTNAME`.
+- VMs: `VM_MEMORY_MB`, `VM_CPUS`, `VM_DISK_GB`, `VM_DISK_COMPRESSION`, `VM_HOSTNAME`.
 - Admin policy: `ALLOWED_SOFTWARE`, `ALLOW_USER_RESET`, `BRAND_NAME`, `SUPPORT_URL`, `RUNTIME_MIRROR_URL`, `GIT_ALLOWED_HOSTS`, `CACHE_LIMIT_MB`, `CLEAR_CONSOLE`, `VM_MAX_MEMORY_MB`, `VM_MAX_CPUS`, `VM_MAX_DISK_GB`.
 
 Pterodactyl view/edit flags are UI policy, not a secret store. Bot Git mode permits public credential-free HTTPS repositories only; upload mode runs files already present in the server directory.

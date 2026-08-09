@@ -100,3 +100,19 @@ func TestVMMenuUsesThreeLevels(t *testing.T) {
 		}
 	}
 }
+
+func TestVMMenuOffersLightweightAlpine(t *testing.T) {
+	app, output := menuTestApp(t, "1\n1\n1\n", map[string]bool{"vm-alpine": true, "vm-ubuntu": true})
+	selected, err := app.menu()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "vm-alpine" {
+		t.Fatalf("selected=%q, want vm-alpine", selected)
+	}
+	for _, want := range []string{"Virtual Machines", "Lightweight Linux", "Selected: Alpine Linux [vm-alpine]"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("VM menu missing %q:\n%s", want, output.String())
+		}
+	}
+}

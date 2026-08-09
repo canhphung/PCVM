@@ -25,7 +25,7 @@ import (
 
 func ValidateProviderRequest(spec ProviderSpec, cfg Config) error {
 	if spec.Installer == "qemu-vm" {
-		return validateVMRequest(cfg)
+		return validateVMRequest(spec, cfg)
 	}
 	isGame := len(spec.MenuPath) > 0 && spec.MenuPath[0] == "games"
 	if isGame && (cfg.Request.MaxPlayers < 1 || cfg.Request.MaxPlayers > 512) {

@@ -106,7 +106,19 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 		launch.Command = []string{filepath.Join(venv, "bin", "python3"), "-m", "endstone", "--server-folder", a.Config.Home, "--yes", "--remote", "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/v2"}
 		launch.Environment = []string{"PYTHONUNBUFFERED=1", "PYTHONDONTWRITEBYTECODE=1"}
 	case "qemu-vm":
+		image, ok := findVMImageForArtifact(spec, state.Artifact, a.Config.Arch)
+		if !ok {
+			return empty, fmt.Errorf("VM state does not reference an image pinned by the embedded catalog")
+		}
+		compression, err := validateVMCompression(stateVMCompression(state))
+		if err != nil {
+			return empty, fmt.Errorf("state VM disk compression is invalid: %w", err)
+		}
 		launch.WorkingDirectory = a.Config.Home
+		launch.VMImageID = image.ID
+		launch.VMImageVariant = image.Variant
+		launch.VMImageChecksum = pinnedVMImageChecksum(image)
+		launch.VMDiskCompression = compression
 	default:
 		return empty, fmt.Errorf("unsupported installer %q", spec.Installer)
 	}
