@@ -117,7 +117,23 @@ func TestVMValidationAndCloudInit(t *testing.T) {
 	if strings.Contains(data, "%!") || !strings.Contains(data, "restart, serial-getty@ttyS0.service") {
 		t.Fatalf("invalid AMD64 cloud-init formatting: %s", data)
 	}
-	if arm := cloudInitUserData("lab-vm", "arm64"); !strings.Contains(arm, "restart, serial-getty@ttyAMA0.service") {
+	decodeFiles := func(config string) string {
+		var decoded strings.Builder
+		for _, line := range strings.Split(config, "\n") {
+			value := strings.TrimPrefix(strings.TrimSpace(line), "content: ")
+			if value == strings.TrimSpace(line) {
+				continue
+			}
+			if raw, err := base64.StdEncoding.DecodeString(value); err == nil {
+				decoded.Write(raw)
+			}
+		}
+		return decoded.String()
+	}
+	if !strings.Contains(decodeFiles(data), "> /dev/ttyS0") {
+		t.Fatal("AMD64 readiness marker is not written to the captured serial console")
+	}
+	if arm := cloudInitUserData("lab-vm", "arm64"); !strings.Contains(arm, "restart, serial-getty@ttyAMA0.service") || !strings.Contains(decodeFiles(arm), "> /dev/ttyAMA0") {
 		t.Fatalf("ARM64 cloud-init targets the wrong serial console: %s", arm)
 	}
 	cfg.Request.VMHostname = "bad/name"
@@ -163,7 +179,7 @@ func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 			decoded.Write(raw)
 		}
 	}
-	for _, script := range []string{"ttyAMA0", "rc-update add local default", "[PCVM-GUEST] READY", `exec /usr/bin/doas -s "$@"`} {
+	for _, script := range []string{"ttyAMA0", "/dev/ttyAMA0", "rc-update add local default", "[PCVM-GUEST] READY", `exec /usr/bin/doas -s "$@"`} {
 		if !strings.Contains(decoded.String(), script) {
 			t.Fatalf("Alpine cloud-init missing encoded %q", script)
 		}

@@ -504,7 +504,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'echo "[PCVM-GUEST] READY" > /dev/console'
+ExecStart=/bin/sh -c 'echo "[PCVM-GUEST] READY" > /dev/%s'
 RemainAfterExit=yes
 
 [Install]
@@ -539,7 +539,7 @@ runcmd:
   - [systemctl, daemon-reload]
   - [systemctl, restart, serial-getty@%s.service]
   - [systemctl, enable, --now, pcvm-ready.service]
-`, hostname, encode(autologin), encode(autologin), encode(fmt.Sprintf(readyUnit, console)), console)
+	`, hostname, encode(autologin), encode(autologin), encode(fmt.Sprintf(readyUnit, console, console)), console)
 }
 
 func cloudInitUserDataForProvider(provider, hostname, arch string) string {
@@ -563,7 +563,7 @@ if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
 fi
 exec /usr/bin/doas "$@"
 `
-	ready := "#!/bin/sh\necho \"[PCVM-GUEST] READY\" > /dev/console\n"
+	ready := fmt.Sprintf("#!/bin/sh\necho \"[PCVM-GUEST] READY\" > /dev/%s\n", console)
 	firstBoot := fmt.Sprintf(`#!/bin/sh
 set -eu
 console=%s
