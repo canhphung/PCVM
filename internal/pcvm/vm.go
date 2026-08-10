@@ -559,7 +559,11 @@ func alpineCloudInitUserData(hostname, arch string) string {
 	sudoCompat := `#!/bin/sh
 if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
     shift
-    exec /usr/bin/doas -s "$@"
+    if [ "$#" -gt 0 ] && [ "$1" = "-c" ]; then
+        shift
+        exec /usr/bin/doas /bin/ash -c "$@"
+    fi
+    exec /usr/bin/doas /bin/ash -l "$@"
 fi
 exec /usr/bin/doas "$@"
 `
@@ -567,6 +571,10 @@ exec /usr/bin/doas "$@"
 	firstBoot := fmt.Sprintf(`#!/bin/sh
 set -eu
 console=%s
+mkdir -p /etc/doas.d
+rm -f /etc/doas.conf /etc/doas.d/*.conf
+printf '%%s\n' 'permit nopass pcvm as root' > /etc/doas.d/pcvm.conf
+chmod 0400 /etc/doas.d/pcvm.conf
 line="$console::respawn:/sbin/getty -n -l /usr/local/sbin/pcvm-autologin -L $console 115200 vt100"
 if grep -q "^$console::" /etc/inittab; then
     sed -i "\\|^$console::|c\\$line" /etc/inittab
@@ -592,7 +600,8 @@ users:
 write_files:
   - path: /etc/doas.d/pcvm.conf
     permissions: '0400'
-    content: permit nopass pcvm as root
+    content: |
+      permit nopass pcvm as root
   - path: /usr/local/sbin/pcvm-autologin
     permissions: '0755'
     encoding: b64
