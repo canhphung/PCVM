@@ -90,13 +90,17 @@ jobs:
           done
           test "$(grep -Fc '[PCVM] READY' "$log_file")" -ge 1
           echo '[smoke] guest ready; exercising the serial console'
-          printf '%s\n' 'uname -a' 'sudo -n id -u' 'sudo -i -c "id -u"' 'sudo reboot' > /tmp/serial-input
+          printf '%s\n' \
+            'uname -m | sed "s/^/PCVM_ARCH=/"' \
+            'sudo -n id -u | sed "s/^/PCVM_ROOT=/"' \
+            'sudo -i -c "id -u" | sed "s/^/PCVM_LOGIN_ROOT=/"' \
+            'sudo reboot' > /tmp/serial-input
           timeout --signal=TERM --kill-after=5s 20s \
             docker attach --sig-proxy=false pcvm-vm < /tmp/serial-input > /tmp/serial.log 2>&1 || true
           serial_ok=0
           for _ in $(seq 1 10); do
-            if grep -Eq 'Linux .* (x86_64|aarch64)' "$log_file" && \
-              [ "$(grep -Ec '^0\r?$' "$log_file" || true)" -ge 2 ]; then
+            if grep -Eq 'PCVM_ARCH=(x86_64|aarch64)' "$log_file" && \
+              grep -Fq 'PCVM_ROOT=0' "$log_file" && grep -Fq 'PCVM_LOGIN_ROOT=0' "$log_file"; then
               serial_ok=1
               break
             fi

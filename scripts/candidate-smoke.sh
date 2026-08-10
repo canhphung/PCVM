@@ -100,14 +100,16 @@ case "$kind" in
       -e "SOFTWARE=$software" -e SOFTWARE_VERSION=3.24 -e SOFTWARE_BUILD=latest \
       -e VM_DISK_GB=2 -e VM_MEMORY_MB=1536 -e "VM_CPUS=$vm_cpus" "$image" >/dev/null
     wait_ready 1200
-    printf 'uname -m\nsudo -n id -u\n' > "$data/serial-input"
+    printf '%s\n' \
+      'uname -m | sed "s/^/PCVM_ARCH=/"' \
+      'sudo -n id -u | sed "s/^/PCVM_ROOT=/"' > "$data/serial-input"
     timeout --signal=TERM --kill-after=5s 20s \
       docker attach --sig-proxy=false "$name" < "$data/serial-input" > "$data/serial.log" 2>&1 || true
     if [ "$arch" = arm64 ]; then machine=aarch64; else machine=x86_64; fi
     serial_ok=0
     for _ in $(seq 1 10); do
       docker logs "$name" > "$data/container.log" 2>&1
-      if grep -Fq "$machine" "$data/container.log" && grep -Eq '^0\r?$' "$data/container.log"; then
+      if grep -Fq "PCVM_ARCH=$machine" "$data/container.log" && grep -Fq 'PCVM_ROOT=0' "$data/container.log"; then
         serial_ok=1
         break
       fi
