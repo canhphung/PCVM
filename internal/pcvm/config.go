@@ -18,9 +18,42 @@ type Config struct {
 	AllocationPort int
 	Request        Request
 	Policy         Policy
+	Dependencies   Dependencies
 }
 
 func ConfigFromEnv() (Config, error) {
+	autoUpdate, err := envStrictBool("AUTO_UPDATE", false)
+	if err != nil {
+		return Config{}, err
+	}
+	allowUserReset, err := envStrictBool("ALLOW_USER_RESET", true)
+	if err != nil {
+		return Config{}, err
+	}
+	allowSystemPath, err := envStrictBool("PCVM_ALLOW_SYSTEM_RUNTIME", false)
+	if err != nil {
+		return Config{}, err
+	}
+	clearConsole, err := envStrictBool("CLEAR_CONSOLE", true)
+	if err != nil {
+		return Config{}, err
+	}
+	sourceMode, err := envStrictEnum("SOURCE_MODE", "upload", "upload", "git")
+	if err != nil {
+		return Config{}, err
+	}
+	webMode, err := envStrictEnum("WEB_MODE", "static", "static", "proxy")
+	if err != nil {
+		return Config{}, err
+	}
+	diskCompression, err := envStrictEnum("VM_DISK_COMPRESSION", "off", "off", "zstd")
+	if err != nil {
+		return Config{}, err
+	}
+	modpackMode, err := envStrictEnum("MODPACK_MODE", "project", "project", "upload")
+	if err != nil {
+		return Config{}, err
+	}
 	home := strings.TrimSpace(os.Getenv("PCVM_HOME"))
 	if home == "" {
 		home = "/home/container"
@@ -38,14 +71,13 @@ func ConfigFromEnv() (Config, error) {
 		}
 		limit = parsed
 	}
-	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,fabric,forge,neoforge,velocity,bungeecord,bedrock,pocketmine,powernukkitx,cloudburst-nukkit,endstone,cs2,gmod,l4d2,samp,mtasa,palworld,rust,rust-umod,project-zomboid,valheim,valheim-bepinex,7dtd,unturned,terraria,tmodloader,satisfactory,factorio,nginx,apache,caddy,node-bot,python-bot,lavalink,code-server,vm-ubuntu,vm-debian,vm-almalinux,vm-rocky,vm-alpine"))
+	allowed := csvSet(envDefault("ALLOWED_SOFTWARE", "vanilla,paper,purpur,pufferfish,folia,canvas,fabric,quilt,forge,neoforge,paper-geyser,modrinth-modpack,velocity,bungeecord,bedrock,pocketmine,powernukkitx,cloudburst-nukkit,endstone,cs2,gmod,l4d2,samp,mtasa,palworld,rust,rust-umod,project-zomboid,valheim,valheim-bepinex,7dtd,unturned,terraria,tmodloader,tshock,satisfactory,factorio,nginx,apache,caddy,node-bot,python-bot,bun-app,deno-app,go-app,dotnet-app,lavalink,code-server,vm-ubuntu,vm-debian,vm-almalinux,vm-rocky,vm-alpine"))
 	gitHosts := csvSet(envDefault("GIT_ALLOWED_HOSTS", "github.com,gitlab.com,codeberg.org"))
 	request := Request{
 		Software: envDefault("SOFTWARE", "interactive"), Version: envDefault("SOFTWARE_VERSION", "latest"),
 		Build: envDefault("SOFTWARE_BUILD", "latest"), RuntimeVersion: envDefault("RUNTIME_VERSION", "auto"),
-		AutoUpdate: envBool("AUTO_UPDATE", false), UpdateRequest: os.Getenv("UPDATE_REQUEST"),
-		AcceptEULA: envBool("ACCEPT_MINECRAFT_EULA", false), ResetConfirm: os.Getenv("RESET_CONFIRM"),
-		SourceMode: envDefault("SOURCE_MODE", "upload"), GitURL: os.Getenv("GIT_URL"),
+		AutoUpdate: autoUpdate, UpdateRequest: os.Getenv("UPDATE_REQUEST"), ResetConfirm: os.Getenv("RESET_CONFIRM"),
+		SourceMode: sourceMode, GitURL: os.Getenv("GIT_URL"),
 		GitBranch: envDefault("GIT_BRANCH", "main"), EntryFile: os.Getenv("ENTRY_FILE"),
 		AppArgs: os.Getenv("APP_ARGS"), AppReady: os.Getenv("APP_READY_PATTERN"),
 		CodeServerPassword: os.Getenv("CODE_SERVER_PASSWORD"),
@@ -55,21 +87,23 @@ func ConfigFromEnv() (Config, error) {
 		GameSeed: os.Getenv("GAME_SEED"), GameExtraArgs: os.Getenv("GAME_EXTRA_ARGS"), SteamGSLT: os.Getenv("STEAM_GSLT"),
 		QueryPort: envPort("QUERY_PORT"), SteamPort: envPort("STEAM_PORT"), ReliablePort: envPort("RELIABLE_PORT"),
 		GamePort2: envPort("GAME_PORT_2"), GamePort3: envPort("GAME_PORT_3"), RCONPort: envPortDefault("RCON_PORT", 25575),
-		TelnetPort: envPortDefault("TELNET_PORT", 8081), WebMode: envDefault("WEB_MODE", "static"),
+		TelnetPort: envPortDefault("TELNET_PORT", 8081), WebMode: webMode,
 		WebRoot: envDefault("WEB_ROOT", "public"), UpstreamURL: os.Getenv("UPSTREAM_URL"),
 		VMMemoryMB: envDefault("VM_MEMORY_MB", "auto"), VMCPUs: envDefault("VM_CPUS", "auto"),
-		VMDiskGB: envInt("VM_DISK_GB", 10), VMDiskCompression: strings.ToLower(envDefault("VM_DISK_COMPRESSION", "off")),
-		VMHostname: envDefault("VM_HOSTNAME", "pcvm"),
+		VMDiskGB: envInt("VM_DISK_GB", 10), VMDiskCompression: diskCompression,
+		VMHostname:  envDefault("VM_HOSTNAME", "pcvm"),
+		ModpackMode: modpackMode, ModpackProject: os.Getenv("MODPACK_PROJECT"),
+		ModpackFile: envDefault("MODPACK_FILE", "server.mrpack"),
 	}
 	brandName := envDefault("BRAND_NAME", "PCVM")
 	if strings.EqualFold(strings.ReplaceAll(brandName, " ", ""), "smartmultiegg") {
 		brandName = "PCVM"
 	}
-	policy := Policy{AllowedSoftware: allowed, AllowUserReset: envBool("ALLOW_USER_RESET", true),
+	policy := Policy{AllowedSoftware: allowed, AllowUserReset: allowUserReset,
 		BrandName: brandName, SupportURL: os.Getenv("SUPPORT_URL"),
 		RuntimeMirror: os.Getenv("RUNTIME_MIRROR_URL"), AllowedGitHosts: gitHosts,
-		CacheLimitBytes: limit * 1024 * 1024, AllowSystemPath: envBool("PCVM_ALLOW_SYSTEM_RUNTIME", false),
-		ClearConsole: envBool("CLEAR_CONSOLE", true), VMMaxMemoryMB: envInt("VM_MAX_MEMORY_MB", 16384),
+		CacheLimitBytes: limit * 1024 * 1024, AllowSystemPath: allowSystemPath,
+		ClearConsole: clearConsole, VMMaxMemoryMB: envInt("VM_MAX_MEMORY_MB", 16384),
 		VMMaxCPUs: envInt("VM_MAX_CPUS", 8), VMMaxDiskGB: envInt("VM_MAX_DISK_GB", 64)}
 	if policy.RuntimeMirror != "" {
 		u, err := url.Parse(policy.RuntimeMirror)
@@ -92,7 +126,7 @@ func ConfigFromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("SERVER_PORT must be an integer between 1 and 65535")
 		}
 	}
-	return Config{Home: home, Control: filepath.Join(home, ".pcvm"), Arch: arch, ImageProfile: ImageProfileFull, AllocationPort: allocationPort, Request: request, Policy: policy}, nil
+	return Config{Home: home, Control: filepath.Join(home, ".pcvm"), Arch: arch, ImageProfile: ImageProfileFull, AllocationPort: allocationPort, Request: request, Policy: policy, Dependencies: DefaultDependencies()}, nil
 }
 
 func envDefault(key, fallback string) string {
@@ -101,13 +135,29 @@ func envDefault(key, fallback string) string {
 	}
 	return fallback
 }
-func envBool(key string, fallback bool) bool {
+func envStrictBool(key string, fallback bool) (bool, error) {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
-		return fallback
+		return fallback, nil
 	}
 	b, err := strconv.ParseBool(v)
-	return err == nil && b
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean (0/1 or true/false)", key)
+	}
+	return b, nil
+}
+
+func envStrictEnum(key, fallback string, allowed ...string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		value = fallback
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("%s must be one of: %s", key, strings.Join(allowed, ", "))
 }
 
 func envInt(key string, fallback int) int {

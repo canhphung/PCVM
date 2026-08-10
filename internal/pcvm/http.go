@@ -22,12 +22,13 @@ type HTTPClient struct {
 	AllowedHosts map[string]bool
 	AllowHTTP    bool
 	Retries      int
+	Log          *Logger
 }
 
 var debianCloudRedirectHosts = csvSet("laotzu.ftp.acc.umu.se,chuangtzu.ftp.acc.umu.se")
 
 func NewHTTPClient() *HTTPClient {
-	hosts := csvSet("launchermeta.mojang.com,piston-meta.mojang.com,piston-data.mojang.com,fill.papermc.io,fill-data.papermc.io,api.purpurmc.org,ci.pufferfish.host,meta.fabricmc.net,maven.minecraftforge.net,maven.neoforged.net,ci.md-5.net,hub.spigotmc.org,repo.opencollab.dev,net-secondary.web.minecraft-services.net,www.minecraft.net,minecraft.net,minecraft.azureedge.net,api.github.com,github.com,raw.githubusercontent.com,objects.githubusercontent.com,release-assets.githubusercontent.com,pypi.org,files.pythonhosted.org,nodejs.org,python.org,www.python.org,download.oracle.com,api.adoptium.net,terraria.org,www.terraria.org,factorio.com,www.factorio.com,dl.factorio.com,steamcdn-a.akamaihd.net,github-releases.githubusercontent.com,builds.dotnet.microsoft.com,linux.multitheftauto.com,mirror.multitheftauto.com,mirror-cdn.multitheftauto.com,cloud-images.ubuntu.com,cloud.debian.org,repo.almalinux.org,download.rockylinux.org,dl-cdn.alpinelinux.org")
+	hosts := csvSet("launchermeta.mojang.com,launcher.mojang.com,piston-meta.mojang.com,piston-data.mojang.com,fill.papermc.io,fill-data.papermc.io,api.purpurmc.org,ci.pufferfish.host,meta.fabricmc.net,maven.fabricmc.net,meta.quiltmc.org,maven.quiltmc.org,maven.minecraftforge.net,maven.neoforged.net,ci.md-5.net,hub.spigotmc.org,repo.opencollab.dev,download.geysermc.org,canvasmc.io,jenkins.canvasmc.io,api.modrinth.com,cdn.modrinth.com,net-secondary.web.minecraft-services.net,www.minecraft.net,minecraft.net,minecraft.azureedge.net,api.github.com,github.com,raw.githubusercontent.com,objects.githubusercontent.com,release-assets.githubusercontent.com,pypi.org,files.pythonhosted.org,nodejs.org,python.org,www.python.org,download.oracle.com,api.adoptium.net,terraria.org,www.terraria.org,factorio.com,www.factorio.com,dl.factorio.com,steamcdn-a.akamaihd.net,github-releases.githubusercontent.com,builds.dotnet.microsoft.com,go.dev,dl.google.com,linux.multitheftauto.com,mirror.multitheftauto.com,mirror-cdn.multitheftauto.com,cloud-images.ubuntu.com,cloud.debian.org,repo.almalinux.org,download.rockylinux.org,dl-cdn.alpinelinux.org")
 	h := &HTTPClient{AllowedHosts: hosts, Retries: 3}
 	h.Client = &http.Client{Timeout: 45 * time.Second, CheckRedirect: h.validateRedirect}
 	return h
@@ -165,7 +166,15 @@ func (h *HTTPClient) Download(ctx context.Context, artifact Artifact, dest strin
 	defer os.Remove(name)
 	h256, h512, h1 := sha256.New(), sha512.New(), sha1.New()
 	const maxDownload = int64(4 << 30)
-	written, err := io.Copy(io.MultiWriter(tmp, h256, h512, h1), io.LimitReader(resp.Body, maxDownload+1))
+	label := safeDownloadLabel(artifact.FileName)
+	if h.Log != nil {
+		h.Log.Printf("DOWNLOAD phase=start artifact=%s total=%dMB", label, bytesToMiB(resp.ContentLength))
+	}
+	progress := &downloadProgressWriter{
+		writer: io.MultiWriter(tmp, h256, h512, h1), log: h.Log, label: label,
+		total: resp.ContentLength, started: time.Now(), nextBytes: 64 << 20,
+	}
+	written, err := io.Copy(progress, io.LimitReader(resp.Body, maxDownload+1))
 	if err != nil {
 		tmp.Close()
 		return artifact, err
@@ -195,5 +204,66 @@ func (h *HTTPClient) Download(ctx context.Context, artifact Artifact, dest strin
 	if err := os.Rename(name, dest); err != nil {
 		return artifact, err
 	}
+	if h.Log != nil {
+		h.Log.Printf("DOWNLOAD phase=complete artifact=%s bytes=%d checksum=verified", label, written)
+	}
 	return artifact, nil
+}
+
+type downloadProgressWriter struct {
+	writer    io.Writer
+	log       *Logger
+	label     string
+	total     int64
+	written   int64
+	started   time.Time
+	lastLog   time.Time
+	nextBytes int64
+}
+
+func (w *downloadProgressWriter) Write(data []byte) (int, error) {
+	n, err := w.writer.Write(data)
+	w.written += int64(n)
+	if w.log == nil || n == 0 {
+		return n, err
+	}
+	now := time.Now()
+	if w.written < w.nextBytes && !w.lastLog.IsZero() && now.Sub(w.lastLog) < 5*time.Second {
+		return n, err
+	}
+	w.lastLog = now
+	w.nextBytes = w.written + 64<<20
+	elapsed := now.Sub(w.started)
+	rate := int64(0)
+	if elapsed > 0 {
+		rate = int64(float64(w.written) / elapsed.Seconds())
+	}
+	percent, eta := int64(0), int64(0)
+	if w.total > 0 {
+		percent = w.written * 100 / w.total
+		if rate > 0 && w.total > w.written {
+			eta = (w.total - w.written) / rate
+		}
+	}
+	w.log.Printf("DOWNLOAD phase=progress artifact=%s bytes=%d total=%d percent=%d rate=%dBps eta=%ds", w.label, w.written, w.total, percent, rate, eta)
+	return n, err
+}
+
+func safeDownloadLabel(value string) string {
+	value = filepath.Base(strings.TrimSpace(value))
+	if value == "" || value == "." {
+		return "artifact"
+	}
+	var clean strings.Builder
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			clean.WriteByte('_')
+		} else {
+			clean.WriteRune(character)
+		}
+		if clean.Len() >= 128 {
+			break
+		}
+	}
+	return clean.String()
 }

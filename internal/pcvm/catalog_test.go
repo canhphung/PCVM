@@ -12,15 +12,16 @@ func TestEmbeddedCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Providers) != 43 {
-		t.Fatalf("providers=%d, want 43", len(c.Providers))
+	if len(c.Providers) != 53 {
+		t.Fatalf("providers=%d, want 53", len(c.Providers))
 	}
 	strategies := map[string]int{}
 	for _, provider := range c.Providers {
 		strategies[provider.Memory.Strategy]++
 	}
-	if strategies["jvm-heap"] != 12 || strategies["node-heap"] != 2 || strategies["php-limit"] != 1 ||
-		strategies["dotnet-gc"] != 1 || strategies["qemu-guest"] != 5 || strategies["cgroup-only"] != 22 {
+	if strategies["jvm-heap"] != 17 || strategies["node-heap"] != 2 || strategies["php-limit"] != 1 ||
+		strategies["deno-heap"] != 1 || strategies["go-limit"] != 1 || strategies["dotnet-gc"] != 3 ||
+		strategies["qemu-guest"] != 5 || strategies["cgroup-only"] != 23 {
 		t.Fatalf("unexpected memory strategy matrix: %#v", strategies)
 	}
 	if _, ok := c.Provider("waterfall"); ok {
@@ -42,15 +43,34 @@ func TestEmbeddedCatalog(t *testing.T) {
 		t.Fatalf("unexpected new provider ARM64 list: %#v", appsARM)
 	}
 	vanilla, ok := c.Provider("vanilla")
-	if !ok || len(vanilla.ReadyPatterns) == 0 {
+	if !ok || len(vanilla.Readiness.Patterns) == 0 {
 		t.Fatal("Vanilla ready pattern missing")
 	}
-	re, err := regexp.Compile(vanilla.ReadyPatterns[0])
+	re, err := regexp.Compile(vanilla.Readiness.Patterns[0])
 	if err != nil {
 		t.Fatalf("Vanilla ready pattern is invalid: %v", err)
 	}
 	if !re.MatchString("[Server thread/INFO]: Done (1.234s)! For help, type \"help\"") {
-		t.Fatalf("Vanilla ready pattern %q did not match a real startup line", vanilla.ReadyPatterns[0])
+		t.Fatalf("Vanilla ready pattern %q did not match a real startup line", vanilla.Readiness.Patterns[0])
+	}
+}
+
+func TestCatalogAvailabilityRequiresCompatibleRuntimePack(t *testing.T) {
+	catalog := Catalog{
+		Providers: []ProviderSpec{
+			{ID: "native", Name: "Native", Architectures: []string{"arm64"}, Runtime: "native", RuntimePolicy: RuntimePolicySpec{Allowed: []string{"native"}}},
+			{ID: "php", Name: "PHP", Architectures: []string{"arm64"}, Runtime: "php-pmmp", RuntimePolicy: RuntimePolicySpec{Allowed: []string{"pmmp"}}},
+		},
+		RuntimePacks: []RuntimePackSpec{{Kind: "php-pmmp", Version: "pmmp", Architecture: "amd64"}},
+	}
+	available := catalog.Available("arm64", map[string]bool{"native": true, "php": true})
+	if len(available) != 1 || available[0].ID != "native" {
+		t.Fatalf("provider without ARM64 runtime was exposed: %+v", available)
+	}
+	catalog.RuntimePacks = append(catalog.RuntimePacks, RuntimePackSpec{Kind: "php-pmmp", Version: "pmmp", Architecture: "arm64"})
+	available = catalog.Available("arm64", map[string]bool{"native": true, "php": true})
+	if len(available) != 2 {
+		t.Fatalf("provider with compatible runtime was hidden: %+v", available)
 	}
 }
 
@@ -71,6 +91,7 @@ func TestEmbeddedCatalogMemoryProfiles(t *testing.T) {
 		"python-bot":  {Strategy: "cgroup-only", RecommendedMB: 256},
 		"code-server": {Strategy: "node-heap", RecommendedMB: 512, HardMinimumMB: 256},
 		"tmodloader":  {Strategy: "dotnet-gc", RecommendedMB: 1024, HardMinimumMB: 512},
+		"tshock":      {Strategy: "dotnet-gc", RecommendedMB: 1024, HardMinimumMB: 512},
 		"vm-alpine":   {Strategy: "qemu-guest", RecommendedMB: 1536, HardMinimumMB: 1536},
 	}
 	for id, want := range wants {
@@ -81,7 +102,7 @@ func TestEmbeddedCatalogMemoryProfiles(t *testing.T) {
 	}
 }
 
-func TestEmbeddedVMCatalogHasActiveAndLegacyPinnedImages(t *testing.T) {
+func TestEmbeddedVMCatalogHasOnlyActivePinnedImages(t *testing.T) {
 	c, err := LoadCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +133,7 @@ func TestEmbeddedVMCatalogHasActiveAndLegacyPinnedImages(t *testing.T) {
 			total++
 		}
 	}
-	if total != 24 || active != 20 || deprecated != 4 {
+	if total != 20 || active != 20 || deprecated != 0 {
 		t.Fatalf("VM images total=%d active=%d deprecated=%d", total, active, deprecated)
 	}
 }
@@ -132,7 +153,7 @@ func TestCatalogRejectsDuplicateAndUnpinnedRuntime(t *testing.T) {
 func TestCatalogRejectsInvalidReadyPattern(t *testing.T) {
 	c := Catalog{Schema: CatalogSchema, Providers: []ProviderSpec{{
 		ID: "broken", Name: "Broken", Family: "test", Architectures: []string{"amd64"},
-		Runtime: "native", Resolver: "test", Installer: "test", ReadyPatterns: []string{"Done ("}, MenuPath: []string{"apps"}, Memory: catalogTestMemory,
+		Runtime: "native", Resolver: "test", Installer: "test", Readiness: ReadinessSpec{Mode: "regex", Patterns: []string{"Done ("}}, MenuPath: []string{"apps"}, Memory: catalogTestMemory,
 	}}}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected invalid ready pattern error")

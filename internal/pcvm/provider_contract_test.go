@@ -29,7 +29,7 @@ func TestPaperResolverContractFixture(t *testing.T) {
 	}
 	h := NewHTTPClient()
 	h.Client = &http.Client{Transport: fixtures}
-	spec := ProviderSpec{ID: "paper", Name: "Paper", Family: "bukkit", Architectures: []string{"amd64"}, Runtime: "java", Resolver: "papermc", Installer: "jar", Options: map[string]string{"project": "paper"}}
+	spec := ProviderSpec{ID: "paper", Name: "Paper", Family: "bukkit", Architectures: []string{"amd64"}, Runtime: "java", RuntimePolicy: RuntimePolicySpec{Default: "auto", Allowed: []string{"8", "11", "17", "21", "25"}}, Resolver: "papermc", Installer: "jar", Options: DriverOptions{Project: "paper"}}
 	r, err := NewProvider(spec).Resolve(context.Background(), Request{Version: "latest", Build: "latest", RuntimeVersion: "auto"}, h)
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestMojangResolverContractFixture(t *testing.T) {
 	}
 	h := NewHTTPClient()
 	h.Client = &http.Client{Transport: fixtures}
-	spec := ProviderSpec{ID: "vanilla", Name: "Vanilla", Family: "vanilla", Architectures: []string{"amd64"}, Runtime: "java", Resolver: "mojang", Installer: "jar"}
+	spec := ProviderSpec{ID: "vanilla", Name: "Vanilla", Family: "vanilla", Architectures: []string{"amd64"}, Runtime: "java", RuntimePolicy: RuntimePolicySpec{Default: "auto", Allowed: []string{"8", "11", "17", "21", "25"}}, Resolver: "mojang", Installer: "jar"}
 	r, err := NewProvider(spec).Resolve(context.Background(), Request{Version: "latest", RuntimeVersion: "auto"}, h)
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +317,7 @@ exit 9
 	}
 	installed, err := NewProvider(catalogSpec(t, "endstone")).Install(context.Background(), InstallContext{
 		Home: home, ControlDir: control, AllocationPort: 19145, Artifact: wheel, Runtime: runtimePath,
-		Request: Request{AcceptEULA: true, ServerName: "PCVM\nBedrock", MaxPlayers: 20}, Out: io.Discard, Err: io.Discard,
+		Request: Request{ServerName: "PCVM\nBedrock", MaxPlayers: 20}, Out: io.Discard, Err: io.Discard,
 	}, Resolved{Artifact: Artifact{Version: "0.11.8"}, RuntimeVersion: "3.13"})
 	if err != nil {
 		t.Fatal(err)

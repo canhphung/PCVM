@@ -26,7 +26,9 @@ jobs:
     runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Validate requested catalog combination
         env:
           PROVIDER: ${{ inputs.provider }}
@@ -37,7 +39,7 @@ jobs:
             '.providers[] | select(.id == $p) | .vm_images[] | select(.deprecated != true and .version == $v and .architecture == $a)' \
             internal/pcvm/catalog.json >/dev/null
       - name: Build native PCVM image
-        run: docker build --build-arg VERSION=1.8.0 --build-arg PROFILE=vm -t pcvm:full-vm-smoke .
+        run: docker build --build-arg "VERSION=$(jq -r .version internal/pcvm/catalog.json)" --build-arg PROFILE=vm -t pcvm:full-vm-smoke .
       - name: Boot, use serial console, reboot and power down
         env:
           PROVIDER: ${{ inputs.provider }}

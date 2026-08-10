@@ -24,7 +24,7 @@ func TestNonceExpiryAndConfirmation(t *testing.T) {
 	}
 }
 
-func TestGuardedResetPreservesOnlyCacheAndDoesNotFollowSymlink(t *testing.T) {
+func TestQuarantineMovesThenRestoresWithoutFollowingSymlink(t *testing.T) {
 	home := t.TempDir()
 	outside := t.TempDir()
 	mustWrite(t, filepath.Join(home, "world", "level.dat"))
@@ -34,14 +34,15 @@ func TestGuardedResetPreservesOnlyCacheAndDoesNotFollowSymlink(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(home, "escape")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	if err := guardedReset(home, home); err != nil {
+	q, err := beginQuarantineAt(home, filepath.Join(home, ".pcvm"), "test-operation", home)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "world")); !os.IsNotExist(err) {
-		t.Fatal("world not removed")
+		t.Fatal("world not quarantined")
 	}
 	if _, err := os.Stat(filepath.Join(home, ".pcvm", "state.json")); !os.IsNotExist(err) {
-		t.Fatal("state not removed")
+		t.Fatal("state not quarantined")
 	}
 	if _, err := os.Stat(filepath.Join(home, ".pcvm", "cache", "runtimes", "java", "bin", "java")); err != nil {
 		t.Fatal("runtime cache removed")
@@ -49,16 +50,25 @@ func TestGuardedResetPreservesOnlyCacheAndDoesNotFollowSymlink(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outside, "keep.txt")); err != nil {
 		t.Fatal("followed symlink")
 	}
+	if err := q.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, "escape")); err != nil {
+		t.Fatal("symlink entry was not restored")
+	}
+	if _, err := os.Stat(filepath.Join(home, "world", "level.dat")); err != nil {
+		t.Fatal("world was not restored")
+	}
 }
 
-func TestGuardedResetRejectsControlSymlink(t *testing.T) {
+func TestQuarantineRejectsControlSymlink(t *testing.T) {
 	home := t.TempDir()
 	outside := t.TempDir()
 	mustWrite(t, filepath.Join(outside, "keep.txt"))
 	if err := os.Symlink(outside, filepath.Join(home, ".pcvm")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	if err := guardedReset(home, home); err == nil {
+	if _, err := beginQuarantineAt(home, filepath.Join(home, ".pcvm"), "test-operation", home); err == nil {
 		t.Fatal("accepted symlink control directory")
 	}
 	if _, err := os.Stat(filepath.Join(outside, "keep.txt")); err != nil {

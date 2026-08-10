@@ -69,7 +69,7 @@ func TestGroupedMenuHidesEmptyCategoriesAndRetries(t *testing.T) {
 
 func TestMenuFiltersProvidersByEmbeddedImageProfile(t *testing.T) {
 	app, output := menuTestApp(t, "1\n1\n", map[string]bool{"paper": true, "rust": true, "vm-debian": true})
-	app.Config.ImageProfile = ImageProfileCore
+	app.Config.ImageProfile = ImageProfileMinecraft
 	selected, err := app.menu()
 	if err != nil {
 		t.Fatal(err)

@@ -29,7 +29,7 @@ func (r *recordingSupervisor) Run(_ context.Context, s ProcessSpec, _ io.Reader,
 	return nil
 }
 
-func TestInteractivePrefersExistingState(t *testing.T) {
+func TestStateRejectsInjectedProcessMetadata(t *testing.T) {
 	home := t.TempDir()
 	control := home + "/.pcvm"
 	state := State{Provider: "bedrock", Family: "forged-family", ResolvedVersion: "1.21.0", ResolvedBuild: "release", Architecture: "amd64"}
@@ -46,63 +46,54 @@ func TestInteractivePrefersExistingState(t *testing.T) {
 	if err := writeJSONAtomic(filepath.Join(control, "state.json"), tampered); err != nil {
 		t.Fatal(err)
 	}
-	wantCommand := filepath.Join(control, "managed", "bedrock", "1.21.0", "bedrock_server")
-	if err := os.MkdirAll(filepath.Dir(wantCommand), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(wantCommand, []byte("fixture"), 0o750); err != nil {
-		t.Fatal(err)
-	}
 	catalog, err := LoadCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive", AcceptEULA: true}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
+	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive"}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
 	input := bytes.NewBufferString("invalid menu input")
 	app := NewApp(cfg, catalog, input, io.Discard, io.Discard)
 	supervisor := &recordingSupervisor{}
 	app.Supervisor = supervisor
-	if err := app.Run(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := app.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("injected state metadata was accepted: %v", err)
 	}
-	if !supervisor.called || supervisor.spec.Command[0] != wantCommand || strings.Contains(strings.Join(supervisor.spec.Command, " "), "/bin/sh") {
-		t.Fatalf("untrusted command was not rebuilt: %+v", supervisor.spec)
+	if supervisor.called {
+		t.Fatal("process started from injected state")
 	}
 }
 
-func TestInteractiveMigratesLegacyStateBeforeStart(t *testing.T) {
+func TestInteractiveRefusesLegacyStateWithoutWrites(t *testing.T) {
 	home := t.TempDir()
-	legacy := filepath.Join(home, legacyControlName)
+	legacy := filepath.Join(home, ".multiegg")
 	control := filepath.Join(home, ".pcvm")
-	state := State{Provider: "bedrock", Family: "minecraft-bedrock-vanilla", ResolvedVersion: "1.21.0", ResolvedBuild: "release", Architecture: "amd64"}
-	if err := SaveState(legacy, state); err != nil {
+	if err := os.MkdirAll(legacy, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	legacyCommand := filepath.Join(legacy, "managed", "bedrock", "1.21.0", "bedrock_server")
-	if err := os.MkdirAll(filepath.Dir(legacyCommand), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacyCommand, []byte("fixture"), 0o750); err != nil {
+	legacyState := []byte(`{"schema":3,"provider":"bedrock","command":["/bin/sh"]}`)
+	if err := os.WriteFile(filepath.Join(legacy, "state.json"), legacyState, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := LoadCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive", AcceptEULA: true}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
-	var output bytes.Buffer
-	app := NewApp(cfg, catalog, bytes.NewReader(nil), &output, &output)
+	cfg := Config{Home: home, Control: control, Arch: "amd64", Request: Request{Software: "interactive"}, Policy: Policy{AllowedSoftware: map[string]bool{"bedrock": true}}}
+	app := NewApp(cfg, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
 	supervisor := &recordingSupervisor{}
 	app.Supervisor = supervisor
-	if err := app.Run(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := app.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "PCVM-E2001 LEGACY_STATE") {
+		t.Fatalf("legacy state was not refused: %v", err)
 	}
-	wantCommand := filepath.Join(control, "managed", "bedrock", "1.21.0", "bedrock_server")
-	if !supervisor.called || supervisor.spec.Command[0] != wantCommand {
-		t.Fatalf("migrated command=%v, want %s", supervisor.spec.Command, wantCommand)
+	if supervisor.called {
+		t.Fatal("legacy process was started")
 	}
-	if !strings.Contains(output.String(), "migrated legacy launcher state and cache to .pcvm") {
-		t.Fatalf("migration was not reported: %s", output.String())
+	if _, err := os.Lstat(control); !os.IsNotExist(err) {
+		t.Fatalf("legacy refusal wrote control data: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(legacy, "state.json"))
+	if err != nil || !bytes.Equal(got, legacyState) {
+		t.Fatalf("legacy state changed: %v", err)
 	}
 }
 
@@ -126,7 +117,7 @@ func TestTransitionCompatibilityAndDowngrade(t *testing.T) {
 func TestPolicyBlocksProviderBeforeInstall(t *testing.T) {
 	home := t.TempDir()
 	catalog, _ := LoadCatalog(nil)
-	cfg := Config{Home: home, Control: home + "/.pcvm", Arch: "amd64", Request: Request{Software: "paper", AcceptEULA: true}, Policy: Policy{AllowedSoftware: map[string]bool{"node-bot": true}}}
+	cfg := Config{Home: home, Control: home + "/.pcvm", Arch: "amd64", Request: Request{Software: "paper"}, Policy: Policy{AllowedSoftware: map[string]bool{"node-bot": true}}}
 	app := NewApp(cfg, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
 	if err := app.Run(context.Background()); err == nil {
 		t.Fatal("disabled provider was accepted")
@@ -190,7 +181,7 @@ func TestRunStateIgnoresStoredProcessMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if launch.Command[0] != wantCommand || strings.Contains(strings.Join(launch.Environment, "\n"), "LD_PRELOAD") || launch.StopCommand != "stop" {
+	if launch.Command[0] != wantCommand || strings.Contains(strings.Join(launch.Environment, "\n"), "LD_PRELOAD") || launch.Control.StopCommand != "stop" {
 		t.Fatalf("stored process metadata was trusted: %+v", launch)
 	}
 }
@@ -214,8 +205,8 @@ func TestRunStateReportsCgroupOOMKill(t *testing.T) {
 		t.Fatal(err)
 	}
 	oomKills := "1"
-	original := memoryReadFile
-	memoryReadFile = func(path string) ([]byte, error) {
+	dependencies := DefaultDependencies()
+	dependencies.ReadFile = func(path string) ([]byte, error) {
 		switch path {
 		case "/sys/fs/cgroup/memory.max":
 			return []byte("2147483648\n"), nil
@@ -227,10 +218,9 @@ func TestRunStateReportsCgroupOOMKill(t *testing.T) {
 			return nil, os.ErrNotExist
 		}
 	}
-	t.Cleanup(func() { memoryReadFile = original })
-	app := NewApp(Config{Home: home, Control: control, Arch: "amd64", Request: Request{AcceptEULA: true}, Policy: Policy{
+	app := NewApp(Config{Home: home, Control: control, Arch: "amd64", Request: Request{}, Policy: Policy{
 		AllowedSoftware: map[string]bool{"bedrock": true},
-	}}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
+	}, Dependencies: dependencies}, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
 	app.Supervisor = oomSupervisor{after: func() { oomKills = "2" }}
 	if err := app.runState(context.Background(), state); err == nil || !strings.Contains(err.Error(), "OOM-killed by the container memory cgroup") {
 		t.Fatalf("OOM kill was not diagnosed: %v", err)

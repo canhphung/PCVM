@@ -13,7 +13,7 @@ func TestImageProfileProviderMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int{ImageProfileCore: 21, ImageProfileGames: 38, ImageProfileVM: 26, ImageProfileFull: 43}
+	want := map[string]int{ImageProfileMinecraft: 19, ImageProfileGames: 18, ImageProfileApps: 11, ImageProfileVM: 5, ImageProfileFull: 53}
 	for profile, expected := range want {
 		count := 0
 		for _, spec := range catalog.Providers {
@@ -29,12 +29,15 @@ func TestImageProfileProviderMatrix(t *testing.T) {
 		profile, provider string
 		want              bool
 	}{
-		{ImageProfileCore, "paper", true},
-		{ImageProfileCore, "rust", false},
-		{ImageProfileCore, "vm-debian", false},
+		{ImageProfileMinecraft, "paper", true},
+		{ImageProfileMinecraft, "rust", false},
+		{ImageProfileMinecraft, "vm-debian", false},
 		{ImageProfileGames, "rust", true},
+		{ImageProfileGames, "paper", false},
 		{ImageProfileGames, "vm-debian", false},
-		{ImageProfileVM, "paper", true},
+		{ImageProfileApps, "nginx", true},
+		{ImageProfileApps, "paper", false},
+		{ImageProfileVM, "paper", false},
 		{ImageProfileVM, "vm-debian", true},
 		{ImageProfileVM, "rust", false},
 		{ImageProfileFull, "rust", true},
@@ -67,20 +70,20 @@ func TestDirectProviderSelectionRejectsMissingImageCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{
-		Home: t.TempDir(), Arch: "amd64", ImageProfile: ImageProfileCore,
+		Home: t.TempDir(), Arch: "amd64", ImageProfile: ImageProfileMinecraft,
 		Request: Request{Software: "rust", Version: "latest", Build: "latest", Architecture: "amd64"},
 		Policy:  Policy{AllowedSoftware: map[string]bool{"rust": true}},
 	}
 	cfg.Control = cfg.Home + "/.pcvm"
 	app := NewApp(cfg, catalog, bytes.NewReader(nil), io.Discard, io.Discard)
 	err = app.Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "requires the games image capability") {
+	if err == nil || !strings.Contains(err.Error(), "requires the games image") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestNormalizeImageProfile(t *testing.T) {
-	for _, profile := range []string{"", "CORE", " games ", "vm", "full"} {
+	for _, profile := range []string{"", "MINECRAFT", " games ", "apps", "vm", "full"} {
 		if _, err := NormalizeImageProfile(profile); err != nil {
 			t.Errorf("profile %q: %v", profile, err)
 		}

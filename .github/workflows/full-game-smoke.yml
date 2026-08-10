@@ -25,9 +25,7 @@ on:
           - mtasa
           - unturned
           - tmodloader
-          - powernukkitx
-          - cloudburst-nukkit
-          - endstone
+          - tshock
 
 permissions:
   contents: read
@@ -37,10 +35,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - name: Build AMD64 image
-        run: docker build --build-arg VERSION=1.8.0 --build-arg PROFILE=games -t pcvm:full-game-smoke .
+        run: docker build --build-arg "VERSION=$(jq -r .version internal/pcvm/catalog.json)" --build-arg PROFILE=games -t pcvm:full-game-smoke .
       - name: Install, reach readiness and stop safely
         env:
           PROVIDER: ${{ inputs.provider }}
@@ -49,6 +49,7 @@ jobs:
           data=$(mktemp -d)
           cleanup() {
             docker rm -f pcvm-full-game >/dev/null 2>&1 || true
+            sudo chown -R "$(id -u):$(id -g)" "$data" >/dev/null 2>&1 || true
             rm -rf "$data"
           }
           trap cleanup EXIT
@@ -57,11 +58,13 @@ jobs:
           if [ "$PROVIDER" = mtasa ]; then query_port=27138; fi
           docker run -d --name pcvm-full-game \
             -v "$data:/home/container" \
+            --read-only --security-opt no-new-privileges --cap-drop ALL \
+            --tmpfs /tmp:rw,nosuid,nodev,size=512m --tmpfs /run:rw,nosuid,nodev,size=32m \
             -e "SOFTWARE=${PROVIDER}" -e SOFTWARE_VERSION=latest -e SOFTWARE_BUILD=latest \
             -e SERVER_PORT=27015 -e "QUERY_PORT=${query_port}" -e STEAM_PORT=27018 -e RELIABLE_PORT=27019 \
             -e GAME_PORT_2=27016 -e GAME_PORT_3=27017 -e RCON_PORT=29015 -e TELNET_PORT=29016 \
             -e MAX_PLAYERS=4 -e SERVER_NAME='PCVM CI' -e SERVER_PASSWORD=pcvmtest \
-            -e ACCEPT_MINECRAFT_EULA=1 -e CLEAR_CONSOLE=0 pcvm:full-game-smoke
+            -e CLEAR_CONSOLE=0 pcvm:full-game-smoke
           ready=0
           for _ in $(seq 1 7200); do
             if docker logs pcvm-full-game 2>&1 | grep -Fq '[PCVM] READY'; then

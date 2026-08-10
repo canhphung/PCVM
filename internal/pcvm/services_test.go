@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -141,9 +142,7 @@ func TestCodeServerPasswordValidation(t *testing.T) {
 }
 
 func TestWebRequestSafety(t *testing.T) {
-	originalLookup := proxyLookupIP
-	t.Cleanup(func() { proxyLookupIP = originalLookup })
-	proxyLookupIP = func(_ context.Context, host string) ([]net.IPAddr, error) {
+	lookup := func(_ context.Context, host string) ([]net.IPAddr, error) {
 		switch host {
 		case "public.example":
 			return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}, nil
@@ -157,7 +156,8 @@ func TestWebRequestSafety(t *testing.T) {
 	}
 	home := t.TempDir()
 	cfg := Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 8080,
-		Request: Request{WebMode: "proxy", WebRoot: "public", UpstreamURL: "https://public.example/path?ok=1"}}
+		Request:      Request{WebMode: "proxy", WebRoot: "public", UpstreamURL: "https://public.example/path?ok=1"},
+		Dependencies: Dependencies{LookupIP: lookup}}
 	if err := ValidateProviderRequest(catalogSpec(t, "nginx"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -176,30 +176,34 @@ func TestWebRequestSafety(t *testing.T) {
 	if err := ValidateProviderRequest(catalogSpec(t, "nginx"), cfg); err == nil {
 		t.Fatal("escaping WEB_ROOT was accepted")
 	}
+	for _, root := range []string{"public\n} include /etc/passwd;", `public"`, "public folder"} {
+		cfg.Request.WebRoot = root
+		if err := ValidateProviderRequest(catalogSpec(t, "nginx"), cfg); err == nil {
+			t.Fatalf("unsafe WEB_ROOT accepted: %q", root)
+		}
+	}
 }
 
 func TestCanonicalWebProxyRejectsDNSRebindingAndConfigMetacharacters(t *testing.T) {
-	originalLookup := proxyLookupIP
-	t.Cleanup(func() { proxyLookupIP = originalLookup })
-	proxyLookupIP = func(_ context.Context, host string) ([]net.IPAddr, error) {
+	lookup := func(_ context.Context, host string) ([]net.IPAddr, error) {
 		if host == "rebinding.example" {
 			return []net.IPAddr{{IP: net.ParseIP("192.168.50.1")}}, nil
 		}
 		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
 	}
-	if _, err := canonicalWebProxy("proxy", "https://rebinding.example"); err == nil {
+	if _, err := canonicalWebProxyWith("proxy", "https://rebinding.example", lookup); err == nil {
 		t.Fatal("DNS name resolving to RFC1918 was accepted")
 	}
 	for _, raw := range []string{
 		"http://public.example/;include/etc/passwd", "http://public.example/{x}",
 		"http://public.example/$variable", "http://public.example/path#fragment",
 	} {
-		if _, err := canonicalWebProxy("proxy", raw); err == nil {
+		if _, err := canonicalWebProxyWith("proxy", raw, lookup); err == nil {
 			t.Fatalf("config metacharacters accepted in %q", raw)
 		}
 	}
 	want := "https://public.example:8443/api?x=1"
-	if got, err := canonicalWebProxy("proxy", want); err != nil || got != want {
+	if got, err := canonicalWebProxyWith("proxy", want, lookup); err != nil || got != want {
 		t.Fatalf("canonical target=%q err=%v", got, err)
 	}
 }
@@ -216,7 +220,7 @@ func TestWebRootRejectsSymlink(t *testing.T) {
 }
 
 func TestCaddyConfigIsHTTPHostAgnosticAndStateless(t *testing.T) {
-	config := caddyConfig("/home/container/.pcvm/web/caddy/conf.d", "/home/container/public", "6201", "static", "")
+	config := caddyConfig("/home/container/public", "6201", "static", "")
 	for _, want := range []string{
 		"\tpersist_config off\n",
 		"\t\tprotocols h1\n",
@@ -231,21 +235,75 @@ func TestCaddyConfigIsHTTPHostAgnosticAndStateless(t *testing.T) {
 	if strings.Contains(config, "http://0.0.0.0") {
 		t.Fatalf("Caddy config contains a Host-matching site address:\n%s", config)
 	}
+	if strings.Contains(config, "import ") {
+		t.Fatalf("Caddy config imports user-controlled snippets:\n%s", config)
+	}
 
-	proxy := caddyConfig("/extensions", "/public", "8080", "proxy", "http://upstream:3000")
-	if !strings.Contains(proxy, "\treverse_proxy \"http://upstream:3000\"\n") {
+	proxy := caddyConfig("/public", "8080", "proxy", "http://127.0.0.1:31337")
+	if !strings.Contains(proxy, "\treverse_proxy \"http://127.0.0.1:31337\"\n") {
 		t.Fatalf("Caddy proxy config is invalid:\n%s", proxy)
 	}
 }
 
+func TestGeneratedWebConfigsNeverLoadUserSnippets(t *testing.T) {
+	configs := []string{
+		nginxConfig("/home/container/.pcvm/managed/web/nginx", "/home/container/public", "8080", "proxy", "http://127.0.0.1:31001"),
+		apacheConfig("/home/container/.pcvm/managed/web/apache", "/home/container/public", "8080", "proxy", "http://127.0.0.1:31002"),
+		caddyConfig("/home/container/public", "8080", "proxy", "http://127.0.0.1:31003"),
+	}
+	for index, config := range configs {
+		lower := strings.ToLower(config)
+		if strings.Contains(lower, "conf.d") || strings.Contains(lower, "import ") {
+			t.Fatalf("config %d loads user snippets:\n%s", index, config)
+		}
+		if !strings.Contains(config, "http://127.0.0.1:3100"+strconv.Itoa(index+1)) {
+			t.Fatalf("config %d does not target the loopback safe proxy:\n%s", index, config)
+		}
+	}
+}
+
+func TestWebProxyConfigIsWrittenOnlyForSafeLoopbackProxy(t *testing.T) {
+	lookup := func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
+	}
+	home := t.TempDir()
+	cfg := Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 8080,
+		Request:      Request{WebMode: "proxy", WebRoot: "public", UpstreamURL: "https://public.example/base"},
+		Dependencies: Dependencies{LookupIP: lookup}}
+	process, err := NewProvider(catalogSpec(t, "caddy")).BuildProcess(context.Background(), cfg,
+		LaunchState{Command: []string{os.Args[0]}}, catalogMemoryPlan(t, "caddy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process.BeforeStart == nil {
+		t.Fatal("proxy process has no safe-proxy lifecycle hook")
+	}
+	cleanup, err := process.BeforeStart(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	data, err := os.ReadFile(filepath.Join(cfg.Control, "managed", "web", "caddy", "Caddyfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(data)
+	if strings.Contains(config, "public.example") || !strings.Contains(config, "reverse_proxy \"http://127.0.0.1:") {
+		t.Fatalf("unsafe generated proxy config:\n%s", config)
+	}
+}
+
 func TestGameExtraArgsCannotOverrideManagedValues(t *testing.T) {
-	if args, err := safeGameExtraArgs(`-tickrate 128 +sv_cheats 0`); err != nil || len(args) != 4 {
+	if args, err := safeGameExtraArgs("cs2", `-tickrate 128 +game_type 0`); err != nil || len(args) != 4 {
 		t.Fatalf("safe args=%v err=%v", args, err)
 	}
-	for _, raw := range []string{"-port=9999", "+rcon.password stolen", "+force_install_dir /tmp/game", "-TelnetPassword=bad"} {
-		if _, err := safeGameExtraArgs(raw); err == nil {
+	for _, raw := range []string{"-port=9999", "+rcon.password stolen", "+force_install_dir /tmp/game", "-TelnetPassword=bad", "+sv_cheats 1"} {
+		if _, err := safeGameExtraArgs("cs2", raw); err == nil {
 			t.Fatalf("managed override accepted: %s", raw)
 		}
+	}
+	if _, err := safeGameExtraArgs("palworld", "-useperfthreads"); err == nil {
+		t.Fatal("provider without an allowlist accepted extra arguments")
 	}
 }
 
@@ -312,6 +370,66 @@ func TestTModLoaderBuildKeepsDotnetDLLArg(t *testing.T) {
 	}
 }
 
+func TestTShockBuildKeepsDotnetDLLAndMemoryLimit(t *testing.T) {
+	home := t.TempDir()
+	runtime := filepath.Join(home, "dotnet")
+	dll := filepath.Join(home, "game", "TShock.Server.dll")
+	if err := os.MkdirAll(filepath.Dir(dll), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{runtime, dll} {
+		if err := os.WriteFile(path, []byte("fixture"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 7777,
+		Request: Request{MaxPlayers: 8, GameWorld: "World"}}
+	state := LaunchState{Provider: "tshock", WorkingDirectory: filepath.Join(home, "game"), Command: []string{runtime, dll}}
+	process, err := NewProvider(catalogSpec(t, "tshock")).BuildProcess(context.Background(), cfg, state, catalogMemoryPlan(t, "tshock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(process.Command) < 2 || process.Command[0] != runtime || process.Command[1] != dll {
+		t.Fatalf("command=%v", process.Command)
+	}
+	if !contains(process.Environment, "DOTNET_GCHeapHardLimit=0x30000000") {
+		t.Fatalf("TShock memory environment=%v", process.Environment)
+	}
+}
+
+func TestGameWorldRejectsTraversalAndBuildsManagedPath(t *testing.T) {
+	home := t.TempDir()
+	cfg := Config{Home: home, Control: filepath.Join(home, ".pcvm"), AllocationPort: 7777,
+		Request: Request{MaxPlayers: 8, GameWorld: "World One"}}
+	for _, value := range []string{"../outside", `..\outside`, "/absolute", `C:\outside`, ".", " world", "world\nname"} {
+		cfg.Request.GameWorld = value
+		if err := ValidateProviderRequest(catalogSpec(t, "terraria"), cfg); err == nil || !strings.Contains(err.Error(), "GAME_WORLD") {
+			t.Errorf("unsafe GAME_WORLD %q was accepted: %v", value, err)
+		}
+	}
+	root, target, err := managedGameWorldPath(home, "saves/Worlds", "World One", ".wld")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != filepath.Join(home, "saves", "Worlds") || target != filepath.Join(root, "World One.wld") {
+		t.Fatalf("root=%q target=%q", root, target)
+	}
+}
+
+func TestGameWorldManagedDirectoryRejectsSymlink(t *testing.T) {
+	home, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(home, "saves")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	root, _, err := managedGameWorldPath(home, "saves/Worlds", "world", ".zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := secureMkdirAll(home, root, 0o750); err == nil {
+		t.Fatal("managed world directory followed a symlink")
+	}
+}
+
 func TestSteamInstallContractWithShim(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX SteamCMD shim")
@@ -371,8 +489,8 @@ func TestNewProviderCatalogContracts(t *testing.T) {
 		if len(spec.MenuPath) == 0 || len(spec.Architectures) == 0 || spec.Readiness.Mode == "" || spec.Control.Mode == "" {
 			t.Errorf("%s has incomplete catalog metadata: %+v", id, spec)
 		}
-		if appid := wantSteam[id]; appid != "" && spec.Options["appid"] != appid {
-			t.Errorf("%s appid=%q, want %q", id, spec.Options["appid"], appid)
+		if appid := wantSteam[id]; appid != "" && spec.Options.AppID != appid {
+			t.Errorf("%s appid=%q, want %q", id, spec.Options.AppID, appid)
 		}
 	}
 }

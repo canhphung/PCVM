@@ -11,7 +11,7 @@ func NormalizeImageProfile(raw string) (string, error) {
 		profile = ImageProfileFull
 	}
 	switch profile {
-	case ImageProfileCore, ImageProfileGames, ImageProfileVM, ImageProfileFull:
+	case ImageProfileMinecraft, ImageProfileGames, ImageProfileApps, ImageProfileVM, ImageProfileFull:
 		return profile, nil
 	default:
 		return "", fmt.Errorf("unsupported embedded image profile %q", raw)
@@ -19,13 +19,21 @@ func NormalizeImageProfile(raw string) (string, error) {
 }
 
 func ProviderImageCapability(spec ProviderSpec) string {
-	if spec.Installer == "qemu-vm" {
-		return ImageProfileVM
+	if len(spec.MenuPath) == 0 {
+		return ""
 	}
-	if len(spec.MenuPath) > 0 && spec.MenuPath[0] == "games" {
+	switch spec.MenuPath[0] {
+	case "java", "proxy", "bedrock":
+		return ImageProfileMinecraft
+	case "games":
 		return ImageProfileGames
+	case "apps", "web":
+		return ImageProfileApps
+	case "vms":
+		return ImageProfileVM
+	default:
+		return ""
 	}
-	return ImageProfileCore
 }
 
 func ImageProfileSupports(profile string, spec ProviderSpec) bool {
@@ -34,16 +42,7 @@ func ImageProfileSupports(profile string, spec ProviderSpec) bool {
 		return false
 	}
 	required := ProviderImageCapability(spec)
-	switch profile {
-	case ImageProfileFull:
-		return true
-	case ImageProfileGames:
-		return required == ImageProfileCore || required == ImageProfileGames
-	case ImageProfileVM:
-		return required == ImageProfileCore || required == ImageProfileVM
-	default:
-		return required == ImageProfileCore
-	}
+	return required != "" && (profile == ImageProfileFull || profile == required)
 }
 
 func ValidateProviderImageProfile(profile string, spec ProviderSpec) error {
@@ -55,5 +54,8 @@ func ValidateProviderImageProfile(profile string, spec ProviderSpec) error {
 		return nil
 	}
 	required := ProviderImageCapability(spec)
-	return fmt.Errorf("provider %q requires the %s image capability; current PCVM image profile is %q (select the %s or full image in Pterodactyl)", spec.ID, required, normalized, required)
+	if required == "" {
+		return fmt.Errorf("provider %q does not declare a supported PCVM image capability", spec.ID)
+	}
+	return fmt.Errorf("provider %q requires the %s image; current PCVM image profile is %q (select the %s or universal image in Pterodactyl)", spec.ID, required, normalized, required)
 }

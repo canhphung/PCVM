@@ -1,105 +1,167 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable SemVer to publish after every gate succeeds
+        required: true
+        default: 2.0.0
+        type: string
+
+env:
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_TAG: v${{ inputs.version }}
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
-  attestations: write
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.x'
           cache: false
       - run: go test -race ./...
-      - name: Verify synchronized SemVer assets and image profiles
+      - run: go test -covermode=atomic -coverprofile=coverage.out ./internal/pcvm
+      - run: go vet ./...
+      - name: Fuzz security parsers
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm"
-          test "$(jq -r '.version' internal/pcvm/catalog.json)" = "$version"
-          test "$(jq -r '.docker_images | to_entries[0].key' egg/egg-pcvm.json)" = "PCVM $version - Full (43 providers)"
-          test "$(jq -r '.docker_images | to_entries[0].value' egg/egg-pcvm.json)" = "$image:$version"
-          test "$(jq -r '.docker_images | length' egg/egg-pcvm.json)" = 4
-          for profile in core games vm; do
-            jq -e --arg value "$image:$version-$profile" '.docker_images | to_entries[] | select(.value == $value)' egg/egg-pcvm.json >/dev/null
-          done
-
-  build-full:
-    needs: test
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - name: Derive release metadata
+          go test ./internal/pcvm -run='^$' -fuzz='^FuzzArchiveTargetStaysWithinRoot$' -fuzztime=10s
+          go test ./internal/pcvm -run='^$' -fuzz='^FuzzGitURLValidation$' -fuzztime=10s
+          go test ./internal/pcvm -run='^$' -fuzz='^FuzzStateParserIsReadOnly$' -fuzztime=10s
+      - name: Check known Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+      - name: Enforce core coverage gate
+        run: go run ./cmd/core-coverage -profile coverage.out -threshold 80
+      - name: Verify synchronized SemVer and generated release assets
         run: |
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm" >> "$GITHUB_ENV"
-      - uses: docker/login-action@v4
+          set -euo pipefail
+          version="$RELEASE_VERSION"
+          grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"$version"
+          test "$(jq -r '.version' internal/pcvm/catalog.json)" = "$version"
+          jq -e '.schema == 6 and (.providers | length) == 53 and ([.providers[].id] | unique | length) == 53' internal/pcvm/catalog.json
+          jq -e '
+            .schema == 1 and .release == $version and .compatibility == "pcvm>=2.0.0"
+            and (.packs | length) == 38
+            and ([.packs[].id] | unique | length) == (.packs | length)
+            and all(.packs[];
+              (.id | length) > 0
+              and (.upstream_version | type == "string" and length > 0 and test("^[[:print:]]+$"))
+              and (.sha256 | test("^[0-9a-f]{64}$"))
+              and (.tree_sha256 | test("^[0-9a-f]{64}$")) and .size > 0)
+          ' --arg version "$version" runtime-manifest.json
+          go run ./cmd/egggen -check
+
+  release-preflight:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ env.VERSION }}
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ env.VERSION }}-full
-            ${{ env.IMAGE }}:full
-          build-args: |
-            VERSION=${{ env.VERSION }}
-            PROFILE=full
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha,scope=profile-full
-          cache-to: type=gha,mode=max,scope=profile-full
-      - uses: sigstore/cosign-installer@v4.1.2
-      - name: Sign full multi-arch image by digest
-        run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+      - name: Require main HEAD and an immutable or resumable release target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main || { echo "Releases must be dispatched from main." >&2; exit 1; }
+          main_sha="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          test "$main_sha" = "$GITHUB_SHA" || { echo "main advanced to ${main_sha}; dispatch the release from its current HEAD." >&2; exit 1; }
+          if release="$(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>/dev/null)"; then
+            jq -e --arg sha "$GITHUB_SHA" '.draft == true and .target_commitish == $sha' <<<"$release" >/dev/null || {
+              echo "GitHub Release $RELEASE_TAG already exists and is not a resumable draft for $GITHUB_SHA." >&2
+              exit 1
+            }
+            tag_sha="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq .object.sha)"
+            test "$tag_sha" = "$GITHUB_SHA" || { echo "$RELEASE_TAG points to $tag_sha, expected $GITHUB_SHA" >&2; exit 1; }
+            echo "Resuming deterministic draft $RELEASE_TAG for $GITHUB_SHA"
+          fi
+      - name: Require recent full-smoke runs for this exact commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date --utc --date='7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          for workflow in full-minecraft-smoke.yml full-app-smoke.yml full-game-smoke.yml full-vm-smoke.yml; do
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=success&per_page=100" > /tmp/runs.json
+            if ! jq -e --arg sha "$GITHUB_SHA" --arg cutoff "$cutoff" '
+              any(.workflow_runs[]; .head_sha == $sha and .conclusion == "success" and .run_started_at >= $cutoff)
+            ' /tmp/runs.json >/dev/null; then
+              echo "No successful ${workflow} run for commit ${GITHUB_SHA} in the last seven days." >&2
+              echo "Dispatch that workflow against this exact commit before creating the release tag." >&2
+              exit 1
+            fi
+          done
 
-  build-profiles:
-    needs: test
+  build-candidates:
+    needs: [test, release-preflight]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
-        profile: [core, games, vm]
+        include:
+          - profile: minecraft
+            platforms: linux/amd64,linux/arm64
+            baseline: 1.8.0-core
+          - profile: games
+            platforms: linux/amd64
+            baseline: 1.8.0-games
+          - profile: apps
+            platforms: linux/amd64,linux/arm64
+            baseline: 1.8.0
+          - profile: vm
+            platforms: linux/amd64,linux/arm64
+            baseline: 1.8.0-vm
+          - profile: full
+            platforms: linux/amd64,linux/arm64
+            baseline: 1.8.0
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - name: Derive release metadata
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Derive candidate metadata
         run: |
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "VERSION=${RELEASE_VERSION}" >> "$GITHUB_ENV"
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm" >> "$GITHUB_ENV"
-      - uses: docker/login-action@v4
+          echo "CANDIDATE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm:candidate-${RELEASE_VERSION}-${{ matrix.profile }}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platforms }}
           push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ env.VERSION }}-${{ matrix.profile }}
-            ${{ env.IMAGE }}:${{ matrix.profile }}
+          tags: ${{ env.CANDIDATE }}
+          labels: |
+            org.opencontainers.image.version=${{ env.VERSION }}
+            io.pcvm.image.profile=${{ matrix.profile }}
           build-args: |
             VERSION=${{ env.VERSION }}
             PROFILE=${{ matrix.profile }}
@@ -107,34 +169,437 @@ jobs:
           provenance: mode=max
           cache-from: type=gha,scope=profile-${{ matrix.profile }}
           cache-to: type=gha,mode=max,scope=profile-${{ matrix.profile }}
-      - uses: sigstore/cosign-installer@v4.1.2
-      - name: Sign profile multi-arch image by digest
-        run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+      - name: Resolve every supported platform descriptor
+        id: descriptors
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          index="$(docker buildx imagetools inspect "${IMAGE}@${DIGEST}" --raw)"
+          for arch in amd64 arm64; do
+            descriptor="$(jq -r --arg arch "$arch" '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest] | if length == 1 then .[0] else empty end' <<<"$index")"
+            if [ "$PROFILE" = games ] && [ "$arch" = amd64 ] && [ -z "$descriptor" ] && jq -e '.layers | length > 0' <<<"$index" >/dev/null; then
+              descriptor="$DIGEST"
+            fi
+            if [ "$arch" = amd64 ] || [ "$PROFILE" != games ]; then
+              test -n "$descriptor" || { echo "missing or duplicate linux/${arch} descriptor" >&2; exit 1; }
+            else
+              test -z "$descriptor" || { echo "Games candidate unexpectedly contains ARM64" >&2; exit 1; }
+            fi
+            echo "${arch}=${descriptor}" >> "$GITHUB_OUTPUT"
+          done
+      - name: Smoke-test the exact AMD64 and ARM64 descriptors
+        env:
+          AMD64_DIGEST: ${{ steps.descriptors.outputs.amd64 }}
+          ARM64_DIGEST: ${{ steps.descriptors.outputs.arm64 }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            if [ "$arch" = amd64 ]; then descriptor="$AMD64_DIGEST"; else descriptor="$ARM64_DIGEST"; fi
+            [ -n "$descriptor" ] || continue
+            ref="${IMAGE}@${descriptor}"
+            test "$(docker run --rm --platform "linux/${arch}" --entrypoint /usr/local/bin/pcvm "$ref" version)" = "$VERSION"
+            test "$(docker run --rm --platform "linux/${arch}" --entrypoint /usr/local/bin/pcvm "$ref" profile)" = "$PROFILE"
+            catalog="$(docker run --rm --platform "linux/${arch}" --read-only --security-opt no-new-privileges \
+              --cap-drop ALL --entrypoint /usr/local/bin/pcvm "$ref" catalog list --json)"
+            jq -e 'length == 53 and ([.[].id] | unique | length) == 53' <<<"$catalog" >/dev/null
+            docker run --rm --platform "linux/${arch}" --read-only --security-opt no-new-privileges \
+              --cap-drop ALL --entrypoint /bin/sh "$ref" -ec 'test "$(id -u)" = 1000; test -r /opt/pcvm/runtime-manifest.json'
+          done
+      - name: Enforce compressed candidate size budget
+        env:
+          AMD64_DIGEST: ${{ steps.descriptors.outputs.amd64 }}
+          ARM64_DIGEST: ${{ steps.descriptors.outputs.arm64 }}
+          BASELINE: ${{ matrix.baseline }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          layer_bytes() {
+            docker buildx imagetools inspect "${IMAGE}@$1" --raw | jq '[.layers[].size] | add'
+          }
+          baseline_descriptor() {
+            raw="$(docker buildx imagetools inspect "${IMAGE}:${BASELINE}" --raw)"
+            descriptor="$(jq -r --arg arch "$1" '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest] | if length == 1 then .[0] else empty end' <<<"$raw")"
+            if [ -z "$descriptor" ] && [ "$1" = amd64 ] && jq -e '.layers | length > 0' <<<"$raw" >/dev/null; then
+              descriptor="$(docker buildx imagetools inspect "${IMAGE}:${BASELINE}" | awk '$1 == "Digest:" {print $2; exit}')"
+            fi
+            printf '%s\n' "$descriptor"
+          }
+          for arch in amd64 arm64; do
+            if [ "$arch" = amd64 ]; then candidate_descriptor="$AMD64_DIGEST"; else candidate_descriptor="$ARM64_DIGEST"; fi
+            [ -n "$candidate_descriptor" ] || continue
+            base_descriptor="$(baseline_descriptor "$arch")"
+            test -n "$base_descriptor" || { echo "missing ${BASELINE} linux/${arch} baseline" >&2; exit 1; }
+            candidate="$(layer_bytes "$candidate_descriptor")"
+            baseline="$(layer_bytes "$base_descriptor")"
+            maximum=0.75
+            [ "$PROFILE" != full ] || maximum=1.05
+            awk -v candidate="$candidate" -v baseline="$baseline" -v maximum="$maximum" -v profile="$PROFILE" -v arch="$arch" '
+              BEGIN {
+                ratio = candidate / baseline
+                printf "%s/%s compressed layers: %.2f MiB (%.1f%% of baseline)\n", profile, arch, candidate/1024/1024, ratio*100
+                if (ratio > maximum) exit 1
+              }
+            '
+          done
+      - name: Scan exact AMD64 descriptor
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.descriptors.outputs.amd64 }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+      - name: Scan exact ARM64 descriptor
+        if: steps.descriptors.outputs.arm64 != ''
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.descriptors.outputs.arm64 }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign tested candidate digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+      - name: Record the exact tested digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          mkdir -p candidate-digest
+          grep -Eq '^sha256:[0-9a-f]{64}$' <<<"$DIGEST"
+          printf '%s\n' "$DIGEST" > "candidate-digest/${PROFILE}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-digest-${{ matrix.profile }}
+          path: candidate-digest/${{ matrix.profile }}
+          if-no-files-found: error
+          retention-days: 1
 
-  publish:
-    needs: [test, build-full, build-profiles]
-    runs-on: ubuntu-24.04
+  candidate-behavior-smoke:
+    needs: build-candidates
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - software: folia
+            kind: minecraft
+            profile: minecraft
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: folia
+            kind: minecraft
+            profile: minecraft
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: canvas
+            kind: minecraft
+            profile: minecraft
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: canvas
+            kind: minecraft
+            profile: minecraft
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: quilt
+            kind: minecraft
+            profile: minecraft
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: quilt
+            kind: minecraft
+            profile: minecraft
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: paper-geyser
+            kind: minecraft
+            profile: minecraft
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: paper-geyser
+            kind: minecraft
+            profile: minecraft
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: modrinth-modpack
+            kind: minecraft
+            profile: minecraft
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: modrinth-modpack
+            kind: minecraft
+            profile: minecraft
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: tshock
+            kind: game
+            profile: games
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: tshock
+            kind: game
+            profile: full
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: bun-app
+            kind: app
+            profile: apps
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: bun-app
+            kind: app
+            profile: apps
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: deno-app
+            kind: app
+            profile: apps
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: deno-app
+            kind: app
+            profile: apps
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: go-app
+            kind: app
+            profile: apps
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: go-app
+            kind: app
+            profile: apps
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: dotnet-app
+            kind: app
+            profile: apps
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: dotnet-app
+            kind: app
+            profile: apps
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - software: vm-alpine
+            kind: vm
+            profile: vm
+            arch: amd64
+            runner: ubuntu-24.04
+          - software: vm-alpine
+            kind: vm
+            profile: vm
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: candidate-digest-${{ matrix.profile }}
+          path: candidate-digest
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Boot and stop the exact candidate digest
+        env:
+          PROFILE: ${{ matrix.profile }}
+          KIND: ${{ matrix.kind }}
+          SOFTWARE: ${{ matrix.software }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm"
+          digest="$(cat "candidate-digest/${PROFILE}")"
+          grep -Eq '^sha256:[0-9a-f]{64}$' <<<"$digest"
+          ref="${image}@${digest}"
+          docker pull "$ref"
+          bash scripts/candidate-smoke.sh "$KIND" "$SOFTWARE" "$ref" "$ARCH"
+
+  prepare-assets:
+    needs: build-candidates
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - name: Render deterministic version-pinned Eggs and checksums
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          version="$RELEASE_VERSION"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm"
+          commit_time="$(git show -s --format=%cI "$GITHUB_SHA")"
+          exported_at="$(date --utc --date="$commit_time" +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
+          go run ./cmd/egggen \
+            -out dist -docs= -release-names \
+            -version "$version" -image "$image" -exported-at "$exported_at"
+          cp runtime-manifest.json dist/runtime-manifest.json
+          (cd dist && sha256sum ./*.json > SHA256SUMS)
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign and verify release assets with keyless Sigstore bundles
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}"
+          for asset in dist/*.json dist/SHA256SUMS; do
+            cosign sign-blob --yes --bundle "${asset}.sigstore.json" "$asset"
+            cosign verify-blob \
+              --bundle "${asset}.sigstore.json" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$asset"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  promote:
+    needs: [build-candidates, candidate-behavior-smoke, prepare-assets]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: candidate-digest-*
+          path: candidate-digests
+          merge-multiple: true
       - name: Derive release metadata
         run: |
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "VERSION=${RELEASE_VERSION}" >> "$GITHUB_ENV"
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm" >> "$GITHUB_ENV"
-      - name: Render pinned Egg and checksums
-        run: |
-          jq --arg image "$IMAGE" --arg version "$VERSION" '
-            .docker_images = {
-              ("PCVM " + $version + " - Full (43 providers)"): ($image + ":" + $version),
-              ("PCVM " + $version + " - Core (21 providers)"): ($image + ":" + $version + "-core"),
-              ("PCVM " + $version + " - Games (38 providers)"): ($image + ":" + $version + "-games"),
-              ("PCVM " + $version + " - Virtual Machines (26 providers)"): ($image + ":" + $version + "-vm")
-            } | .exported_at = (now | todateiso8601)
-          ' egg/egg-pcvm.json > "egg-pcvm-${VERSION}.json"
-          sha256sum "egg-pcvm-${VERSION}.json" runtime-manifest.json > SHA256SUMS
-      - uses: softprops/action-gh-release@v3
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Promote exact tested manifests and verify every tag
+        run: |
+          set -euo pipefail
+          remote_digest() {
+            docker buildx imagetools inspect "$1" 2>/dev/null | awk '$1 == "Digest:" {print $2; exit}'
+          }
+          require_immutable_target() {
+            actual="$(remote_digest "$1" || true)"
+            if [ -n "$actual" ] && [ "$actual" != "$2" ]; then
+              echo "immutable tag $1 resolves to $actual, expected $2; refusing overwrite" >&2
+              exit 1
+            fi
+          }
+          require_digest() {
+            actual=""
+            for _ in $(seq 1 12); do
+              actual="$(remote_digest "$1")" || true
+              [ "$actual" != "$2" ] || return 0
+              sleep 5
+            done
+            echo "$1 resolved to $actual, expected $2" >&2
+            exit 1
+          }
+          for profile in minecraft games apps vm full; do
+            digest="$(cat "candidate-digests/${profile}")"
+            grep -Eq '^sha256:[0-9a-f]{64}$' <<<"$digest" || { echo "invalid ${profile} digest" >&2; exit 1; }
+            if [ "$profile" = full ]; then
+              require_immutable_target "${IMAGE}:${VERSION}" "$digest"
+              require_immutable_target "${IMAGE}:${VERSION}-full" "$digest"
+            else
+              require_immutable_target "${IMAGE}:${VERSION}-${profile}" "$digest"
+            fi
+          done
+          for profile in minecraft games apps vm; do
+            digest="$(cat "candidate-digests/${profile}")"
+            docker buildx imagetools create \
+              --tag "${IMAGE}:${VERSION}-${profile}" \
+              --tag "${IMAGE}:${profile}" \
+              "${IMAGE}@${digest}"
+          done
+          full_digest="$(cat candidate-digests/full)"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${VERSION}" \
+            --tag "${IMAGE}:${VERSION}-full" \
+            --tag "${IMAGE}:latest" \
+            --tag "${IMAGE}:full" \
+            "${IMAGE}@${full_digest}"
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}"
+          for profile in minecraft games apps vm; do
+            digest="$(cat "candidate-digests/${profile}")"
+            require_digest "${IMAGE}:${VERSION}-${profile}" "$digest"
+            require_digest "${IMAGE}:${profile}" "$digest"
+            cosign verify \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "${IMAGE}@${digest}" >/dev/null
+          done
+          require_digest "${IMAGE}:${VERSION}" "$full_digest"
+          require_digest "${IMAGE}:${VERSION}-full" "$full_digest"
+          require_digest "${IMAGE}:latest" "$full_digest"
+          require_digest "${IMAGE}:full" "$full_digest"
+          cosign verify \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE}@${full_digest}" >/dev/null
+
+  publish:
+    needs: promote
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-assets
+          path: dist
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: PCVM ${{ env.RELEASE_TAG }}
           generate_release_notes: true
-          files: |
-            egg-pcvm-${{ env.VERSION }}.json
-            runtime-manifest.json
-            SHA256SUMS
+          draft: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: dist/*
+      - name: Verify every uploaded byte, then publish the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir downloaded
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir downloaded --clobber
+          test "$(find dist -maxdepth 1 -type f | wc -l)" = "$(find downloaded -maxdepth 1 -type f | wc -l)"
+          for asset in dist/*; do
+            cmp --silent "$asset" "downloaded/$(basename "$asset")" || {
+              echo "uploaded release asset differs: $(basename "$asset")" >&2
+              exit 1
+            }
+          done
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

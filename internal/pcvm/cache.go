@@ -7,9 +7,9 @@ import (
 )
 
 // cleanupConsumedInstallCache removes inputs that have already been copied or
-// extracted into their committed installation directories. Runtime downloads
-// are deliberately handled by RuntimeManager: the active archive is required
-// to authenticate the user-writable extracted runtime on every boot.
+// extracted into their committed installation directories. Runtime trees and
+// their signed-manifest-derived receipts are deliberately handled by
+// RuntimeManager; consumed runtime archive blobs are removed after activation.
 func cleanupConsumedInstallCache(control string) error {
 	for _, name := range []string{"artifacts", "sources"} {
 		if err := removeCacheCategory(control, name); err != nil {

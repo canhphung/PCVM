@@ -2,9 +2,7 @@ package pcvm
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,12 +19,10 @@ const (
 	vmMinimumContainerMB = 1536
 	vmHostReserveMB      = 384
 	vmDefaultMemoryMB    = 1024
-	vmInstallSchema      = 2
+	vmInstallSchema      = 3
 )
 
 var vmHostnamePattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
-var vmRunTool = runVMTool
-var vmFirmwareResolver = vmFirmware
 
 type vmInstallMetadata struct {
 	Schema       int    `json:"schema"`
@@ -129,25 +125,23 @@ func validateVMCompression(value string) (string, error) {
 	return value, nil
 }
 
-func stateVMCompression(state State) string {
-	if state.Artifact.Metadata == nil {
-		return "off"
-	}
-	return normalizeVMCompression(state.Artifact.Metadata["disk_compression"])
-}
-
 type cgroupLimits struct {
 	MemoryLimitMB int
 	CPUQuota      float64
 }
 
 func readHostCgroupLimits() cgroupLimits {
+	return readHostCgroupLimitsWith(DefaultDependencies())
+}
+
+func readHostCgroupLimitsWith(dependencies Dependencies) cgroupLimits {
+	readFile := dependencies.withDefaults().ReadFile
 	limits := cgroupLimits{}
-	if raw, err := os.ReadFile("/sys/fs/cgroup/cpu.max"); err == nil {
+	if raw, err := readFile("/sys/fs/cgroup/cpu.max"); err == nil {
 		limits.CPUQuota = parseCgroupV2CPU(string(raw))
 	} else {
-		quotaRaw, quotaErr := os.ReadFile("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
-		periodRaw, periodErr := os.ReadFile("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+		quotaRaw, quotaErr := readFile("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+		periodRaw, periodErr := readFile("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
 		if quotaErr == nil && periodErr == nil {
 			limits.CPUQuota = parseCgroupV1CPU(string(quotaRaw), string(periodRaw))
 		}
@@ -217,6 +211,7 @@ func calculateVMResourcesWithPlan(req Request, policy Policy, cpuQuota float64, 
 }
 
 func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
+	dependencies := ic.Dependencies.withDefaults()
 	if ic.Artifact == "" {
 		return resolved, fmt.Errorf("VM cloud image was not prepared")
 	}
@@ -238,18 +233,13 @@ func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, reso
 		DiskGB: ic.Request.VMDiskGB, Hostname: ic.Request.VMHostname}
 	finalDir := filepath.Join(ic.Home, "vm")
 	stageDir := filepath.Join(ic.ControlDir, "staging", "vm")
-	for _, dir := range []string{finalDir, stageDir} {
-		if _, err := migrateLegacyVMMetadataFile(filepath.Join(dir, "install.json"), meta, resolved.Artifact.SHA256); err != nil {
-			return resolved, fmt.Errorf("migrate legacy VM staging metadata: %w", err)
-		}
-	}
 	if exists, matches, err := vmDirectoryStatus(finalDir, meta); err != nil {
 		return resolved, err
 	} else if exists {
 		if !matches {
 			return resolved, fmt.Errorf("existing VM install metadata does not match requested image; reset is required")
 		}
-		if err := validateCommittedVM(ctx, finalDir, ic.Out, ic.Err); err != nil {
+		if err := validateCommittedVM(ctx, finalDir, ic.Out, ic.Err, dependencies.RunVMTool); err != nil {
 			return resolved, err
 		}
 		if err := os.Remove(ic.Artifact); err != nil && !os.IsNotExist(err) && ic.Log != nil {
@@ -270,12 +260,12 @@ func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, reso
 		}
 	}
 	disk := filepath.Join(stageDir, "disk.qcow2")
-	if err := ensureVMStandaloneDisk(ctx, ic.Artifact, disk, meta.DiskGB, meta.Compression, ic.Out, ic.Err); err != nil {
+	if err := ensureVMStandaloneDisk(ctx, ic.Artifact, disk, meta.DiskGB, meta.Compression, ic.Out, ic.Err, dependencies.RunVMTool); err != nil {
 		return resolved, err
 	}
 	seed := filepath.Join(stageDir, "seed.iso")
 	if info, err := os.Lstat(seed); os.IsNotExist(err) {
-		if err := createNoCloudSeed(ctx, stageDir, seed, meta.Provider, meta.Hostname, meta.Architecture, ic.Out, ic.Err); err != nil {
+		if err := createNoCloudSeed(ctx, stageDir, seed, meta.Provider, meta.Hostname, meta.Architecture, ic.Out, ic.Err, dependencies.RunVMTool); err != nil {
 			return resolved, err
 		}
 	} else if err == nil && !info.Mode().IsRegular() {
@@ -283,7 +273,7 @@ func (p *catalogProvider) installVM(ctx context.Context, ic InstallContext, reso
 	} else if err != nil {
 		return resolved, err
 	}
-	_, varsTemplate, err := vmFirmwareResolver(meta.Architecture)
+	_, varsTemplate, err := dependencies.VMFirmware(meta.Architecture)
 	if err != nil {
 		return resolved, err
 	}
@@ -314,8 +304,6 @@ func (p *catalogProvider) installedVMResult(ic InstallContext, resolved Resolved
 	resolved.WorkDir = ic.Home
 	resolved.Command = []string{qemuBinary(ic.Request.Architecture)}
 	resolved.Environment = nil
-	resolved.ReadyPatterns = []string{`\[PCVM-GUEST\] READY`}
-	resolved.StopCommand = ""
 	return resolved
 }
 
@@ -359,7 +347,13 @@ func findVMImageForArtifact(spec ProviderSpec, artifact Artifact, arch string) (
 		if wantedID != "" && image.ID != wantedID {
 			continue
 		}
-		if image.Architecture != arch || image.Version != artifact.Version || image.Build != artifact.Build || image.URL != artifact.URL {
+		if image.Architecture != arch || image.Version != artifact.Version || image.Build != artifact.Build {
+			continue
+		}
+		// Persisted state stores only the catalog-authored image ID and integrity,
+		// never an executable/download URL. Resolved install artifacts still carry
+		// the URL and must match it exactly before download.
+		if wantedID == "" && image.URL != artifact.URL {
 			continue
 		}
 		if image.SHA512 != "" && !strings.EqualFold(image.SHA512, artifact.SHA512) {
@@ -380,106 +374,19 @@ func pinnedVMImageChecksum(image VMImageSpec) string {
 	return strings.ToLower(firstNonEmpty(image.SHA512, image.SHA256))
 }
 
-func migrateLegacyVMMetadataFile(path string, want vmInstallMetadata, legacySHA256 string) (bool, error) {
-	if want.Compression != "off" {
-		return false, nil
+func ensureVMStandaloneDisk(ctx context.Context, source, disk string, diskGB int, compression string, stdout, stderr anyWriter, runTool VMToolFunc) error {
+	if runTool == nil {
+		runTool = DefaultDependencies().RunVMTool
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("VM install metadata must be a regular file")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false, err
-	}
-	var got vmInstallMetadata
-	if err := json.Unmarshal(data, &got); err != nil || got.Schema != 1 {
-		return false, nil
-	}
-	checksumMatches := strings.EqualFold(got.Checksum, want.Checksum)
-	legacySHA256 = strings.ToLower(legacySHA256)
-	if decoded, decodeErr := hex.DecodeString(legacySHA256); decodeErr == nil && len(decoded) == sha256.Size {
-		checksumMatches = checksumMatches || strings.EqualFold(got.Checksum, legacySHA256)
-	}
-	if !checksumMatches || got.Provider != want.Provider || got.Version != want.Version || got.Build != want.Build ||
-		got.Architecture != want.Architecture || got.DiskGB != want.DiskGB || got.Hostname != want.Hostname {
-		return false, nil
-	}
-	if err := writeJSONAtomic(path, want); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// repairLegacyVMInstallMetadata migrates schema-1 install identity to schema 2.
-// It also repairs the v1.4.0/v1.4.1 Debian computed-SHA256 bug. The migration
-// never modifies the disk, seed, firmware or process argv.
-func repairLegacyVMInstallMetadata(home string, spec ProviderSpec, state State, arch string) (bool, error) {
-	image, ok := findVMImageForArtifact(spec, state.Artifact, arch)
-	if !ok {
-		return false, nil
-	}
-	pinned := pinnedVMImageChecksum(image)
-	legacySHA256 := strings.ToLower(state.Artifact.SHA256)
-	path := filepath.Join(home, "vm", "install.json")
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("VM install metadata must be a regular file")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false, err
-	}
-	var meta vmInstallMetadata
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return false, nil
-	}
-	if meta.Schema == vmInstallSchema {
-		return false, nil
-	}
-	checksumMatches := strings.EqualFold(meta.Checksum, pinned)
-	if image.SHA512 != "" && strings.EqualFold(state.Artifact.SHA512, pinned) {
-		if decoded, decodeErr := hex.DecodeString(legacySHA256); decodeErr == nil && len(decoded) == sha256.Size {
-			checksumMatches = checksumMatches || strings.EqualFold(meta.Checksum, legacySHA256)
-		}
-	}
-	if meta.Provider != spec.ID || meta.Version != image.Version || meta.Build != image.Build || meta.Architecture != arch ||
-		meta.Schema != 1 || !checksumMatches {
-		return false, nil
-	}
-	meta.Schema = vmInstallSchema
-	meta.ImageID = image.ID
-	meta.Variant = image.Variant
-	meta.Compression = "off"
-	meta.Checksum = pinned
-	if err := writeJSONAtomic(path, meta); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func ensureVMStandaloneDisk(ctx context.Context, source, disk string, diskGB int, compression string, stdout, stderr anyWriter) error {
 	if info, err := os.Lstat(disk); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("staged VM disk must be a regular file")
 		}
-		if vmRunTool(ctx, stdout, stderr, "qemu-img", "check", "-q", disk) == nil {
-			if err := vmRunTool(ctx, stdout, stderr, "qemu-img", "resize", disk, fmt.Sprintf("%dG", diskGB)); err != nil {
+		if runTool(ctx, stdout, stderr, "qemu-img", "check", "-q", disk) == nil {
+			if err := runTool(ctx, stdout, stderr, "qemu-img", "resize", disk, fmt.Sprintf("%dG", diskGB)); err != nil {
 				return fmt.Errorf("resume VM disk resize: %w", err)
 			}
-			if err := vmRunTool(ctx, stdout, stderr, "qemu-img", "check", "-q", disk); err != nil {
+			if err := runTool(ctx, stdout, stderr, "qemu-img", "check", "-q", disk); err != nil {
 				return fmt.Errorf("validate resumed VM disk: %w", err)
 			}
 			return nil
@@ -495,26 +402,26 @@ func ensureVMStandaloneDisk(ctx context.Context, source, disk string, diskGB int
 		convertArgs = append(convertArgs, "-c", "-o", "compat=1.1,compression_type=zstd")
 	}
 	convertArgs = append(convertArgs, source, disk)
-	if err := vmRunTool(ctx, stdout, stderr, "qemu-img", convertArgs...); err != nil {
+	if err := runTool(ctx, stdout, stderr, "qemu-img", convertArgs...); err != nil {
 		_ = os.Remove(disk)
 		return fmt.Errorf("convert VM disk: %w", err)
 	}
-	if err := vmRunTool(ctx, stdout, stderr, "qemu-img", "resize", disk, fmt.Sprintf("%dG", diskGB)); err != nil {
+	if err := runTool(ctx, stdout, stderr, "qemu-img", "resize", disk, fmt.Sprintf("%dG", diskGB)); err != nil {
 		_ = os.Remove(disk)
 		return fmt.Errorf("resize VM disk: %w", err)
 	}
-	if err := vmRunTool(ctx, stdout, stderr, "qemu-img", "check", "-q", disk); err != nil {
+	if err := runTool(ctx, stdout, stderr, "qemu-img", "check", "-q", disk); err != nil {
 		_ = os.Remove(disk)
 		return fmt.Errorf("validate VM disk: %w", err)
 	}
 	return nil
 }
 
-func validateCommittedVM(ctx context.Context, dir string, stdout, stderr anyWriter) error {
+func validateCommittedVM(ctx context.Context, dir string, stdout, stderr anyWriter, runTool VMToolFunc) error {
 	if err := validateVMFiles(dir); err != nil {
 		return err
 	}
-	if err := vmRunTool(ctx, stdout, stderr, "qemu-img", "check", "-q", filepath.Join(dir, "disk.qcow2")); err != nil {
+	if err := runTool(ctx, stdout, stderr, "qemu-img", "check", "-q", filepath.Join(dir, "disk.qcow2")); err != nil {
 		return fmt.Errorf("committed VM disk failed validation: %w", err)
 	}
 	return nil
@@ -544,7 +451,7 @@ func runVMTool(ctx context.Context, stdout, stderr anyWriter, name string, args 
 	return cmd.Run()
 }
 
-func createNoCloudSeed(ctx context.Context, stageDir, output, provider, hostname, arch string, stdout, stderr anyWriter) error {
+func createNoCloudSeed(ctx context.Context, stageDir, output, provider, hostname, arch string, stdout, stderr anyWriter, runTool VMToolFunc) error {
 	seedDir := filepath.Join(stageDir, "seed-data")
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
 		return err
@@ -570,7 +477,7 @@ func createNoCloudSeed(ctx context.Context, stageDir, output, provider, hostname
 		return err
 	}
 	defer os.Remove(tempName)
-	if err := vmRunTool(ctx, stdout, stderr, "genisoimage", "-quiet", "-output", tempName, "-volid", "cidata", "-joliet", "-rock",
+	if err := runTool(ctx, stdout, stderr, "genisoimage", "-quiet", "-output", tempName, "-volid", "cidata", "-joliet", "-rock",
 		filepath.Join(seedDir, "user-data"), filepath.Join(seedDir, "meta-data")); err != nil {
 		return err
 	}
@@ -713,7 +620,8 @@ runcmd:
 }
 
 func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory MemoryPlan) (ProcessSpec, error) {
-	resources, err := calculateVMResourcesWithPlan(cfg.Request, cfg.Policy, readHostCgroupLimits().CPUQuota, memory)
+	dependencies := cfg.Dependencies.withDefaults()
+	resources, err := calculateVMResourcesWithPlan(cfg.Request, cfg.Policy, readHostCgroupLimitsWith(dependencies).CPUQuota, memory)
 	if err != nil {
 		return ProcessSpec{}, err
 	}
@@ -734,7 +642,7 @@ func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory M
 		meta.Variant != state.VMImageVariant || !strings.EqualFold(meta.Checksum, state.VMImageChecksum) || meta.Compression != state.VMDiskCompression {
 		return ProcessSpec{}, fmt.Errorf("VM install metadata does not match state")
 	}
-	code, _, err := vmFirmwareResolver(cfg.Arch)
+	code, _, err := dependencies.VMFirmware(cfg.Arch)
 	if err != nil {
 		return ProcessSpec{}, err
 	}

@@ -9,26 +9,30 @@ import (
 	"testing"
 )
 
-func withMemoryFiles(t *testing.T, files map[string]string) {
-	t.Helper()
-	original := memoryReadFile
-	memoryReadFile = func(path string) ([]byte, error) {
+func memoryTestDependencies(files map[string]string, serverMemory string) Dependencies {
+	dependencies := DefaultDependencies()
+	dependencies.ReadFile = func(path string) ([]byte, error) {
 		if value, ok := files[path]; ok {
 			return []byte(value), nil
 		}
 		return nil, os.ErrNotExist
 	}
-	t.Cleanup(func() { memoryReadFile = original })
+	dependencies.Getenv = func(key string) string {
+		if key == "SERVER_MEMORY" {
+			return serverMemory
+		}
+		return ""
+	}
+	return dependencies
 }
 
 func TestMemorySnapshotPrecedenceAndParsing(t *testing.T) {
-	t.Setenv("SERVER_MEMORY", "8G")
-	withMemoryFiles(t, map[string]string{
+	dependencies := memoryTestDependencies(map[string]string{
 		"/sys/fs/cgroup/memory.max":     "4294967296\n",
 		"/sys/fs/cgroup/memory.current": "536870912\n",
 		"/sys/fs/cgroup/memory.events":  "low 0\noom 2\noom_kill 3\n",
-	})
-	snapshot := readMemorySnapshot()
+	}, "8G")
+	snapshot := readMemorySnapshotWith(dependencies)
 	if snapshot.Source != "cgroup-v2" || snapshot.LimitMB != 4096 || snapshot.CurrentMB != 512 || !snapshot.CurrentKnown || snapshot.OOMKills != 3 {
 		t.Fatalf("snapshot=%+v", snapshot)
 	}
@@ -36,41 +40,35 @@ func TestMemorySnapshotPrecedenceAndParsing(t *testing.T) {
 
 func TestMemorySnapshotV1AndServerMemoryFallback(t *testing.T) {
 	t.Run("v1", func(t *testing.T) {
-		t.Setenv("SERVER_MEMORY", "8G")
-		withMemoryFiles(t, map[string]string{
+		dependencies := memoryTestDependencies(map[string]string{
 			"/sys/fs/cgroup/memory.max":                   "max\n",
 			"/sys/fs/cgroup/memory/memory.limit_in_bytes": "2147483648\n",
 			"/sys/fs/cgroup/memory/memory.usage_in_bytes": "268435456\n",
 			"/sys/fs/cgroup/memory/memory.oom_control":    "oom_kill_disable 0\nunder_oom 0\noom_kill 4\n",
-		})
-		snapshot := readMemorySnapshot()
+		}, "8G")
+		snapshot := readMemorySnapshotWith(dependencies)
 		if snapshot.Source != "cgroup-v1" || snapshot.LimitMB != 2048 || snapshot.CurrentMB != 256 || !snapshot.CurrentKnown || snapshot.OOMKills != 4 || snapshot.OOMSource != "cgroup-v1" {
 			t.Fatalf("snapshot=%+v", snapshot)
 		}
 	})
 	t.Run("environment", func(t *testing.T) {
-		t.Setenv("SERVER_MEMORY", "2G")
-		withMemoryFiles(t, nil)
-		snapshot := readMemorySnapshot()
+		snapshot := readMemorySnapshotWith(memoryTestDependencies(nil, "2G"))
 		if snapshot.Source != "SERVER_MEMORY" || snapshot.LimitMB != 2048 {
 			t.Fatalf("snapshot=%+v", snapshot)
 		}
 	})
 	t.Run("unknown", func(t *testing.T) {
-		t.Setenv("SERVER_MEMORY", "invalid")
-		withMemoryFiles(t, nil)
-		if snapshot := readMemorySnapshot(); snapshot.Source != "unknown" || snapshot.LimitMB != 0 {
+		if snapshot := readMemorySnapshotWith(memoryTestDependencies(nil, "invalid")); snapshot.Source != "unknown" || snapshot.LimitMB != 0 {
 			t.Fatalf("snapshot=%+v", snapshot)
 		}
 	})
 	t.Run("malformed cgroups", func(t *testing.T) {
-		t.Setenv("SERVER_MEMORY", "512M")
-		withMemoryFiles(t, map[string]string{
+		dependencies := memoryTestDependencies(map[string]string{
 			"/sys/fs/cgroup/memory.max":                   "not-a-number\n",
 			"/sys/fs/cgroup/memory.current":               "also-invalid\n",
 			"/sys/fs/cgroup/memory/memory.limit_in_bytes": "9223372036854771712\n",
-		})
-		snapshot := readMemorySnapshot()
+		}, "512M")
+		snapshot := readMemorySnapshotWith(dependencies)
 		if snapshot.Source != "SERVER_MEMORY" || snapshot.LimitMB != 512 || snapshot.CurrentKnown {
 			t.Fatalf("snapshot=%+v", snapshot)
 		}
@@ -145,6 +143,8 @@ func TestApplyMemoryPlanUsesSafeRuntimeInterfaces(t *testing.T) {
 		want     string
 	}{
 		{"node-heap", ProcessSpec{Command: []string{"node", "index.js"}}, MemoryPlan{Strategy: "node-heap", TargetMB: 768}, "NODE_OPTIONS=--max-old-space-size=768"},
+		{"deno-heap", ProcessSpec{Command: []string{"deno", "run", "main.ts"}}, MemoryPlan{Strategy: "deno-heap", TargetMB: 768}, "DENO_V8_FLAGS=--max-old-space-size=768"},
+		{"go-limit", ProcessSpec{Command: []string{"app"}}, MemoryPlan{Strategy: "go-limit", TargetMB: 768}, "GOMEMLIMIT=768MiB"},
 		{"php-limit", ProcessSpec{Command: []string{"php", "server.phar"}}, MemoryPlan{Strategy: "php-limit", TargetMB: 384}, "php -d memory_limit=384M server.phar"},
 		{"dotnet-gc", ProcessSpec{Command: []string{"dotnet", "server.dll"}}, MemoryPlan{Strategy: "dotnet-gc", TargetMB: 768}, "DOTNET_GCHeapHardLimit=0x30000000"},
 	}
@@ -175,8 +175,8 @@ func TestMemoryOOMKillDetection(t *testing.T) {
 }
 
 func TestMemoryFileReaderUsesMissingFileErrors(t *testing.T) {
-	withMemoryFiles(t, nil)
-	if _, err := memoryReadFile("missing"); !errors.Is(err, os.ErrNotExist) {
+	dependencies := memoryTestDependencies(nil, "")
+	if _, err := dependencies.ReadFile("missing"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unexpected missing-file error: %v", err)
 	}
 }

@@ -17,17 +17,25 @@ jobs:
     runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Build native PCVM image
-        run: docker build --build-arg VERSION=1.8.0 --build-arg PROFILE=core -t pcvm:full-app-smoke .
+        run: docker build --build-arg "VERSION=$(jq -r .version internal/pcvm/catalog.json)" --build-arg PROFILE=apps -t pcvm:full-app-smoke .
       - name: Install code-server, authenticate and stop safely
         run: |
           set -euo pipefail
           data=$(mktemp -d)
-          cleanup() { docker rm -f pcvm-full-app >/dev/null 2>&1 || true; rm -rf "$data"; }
+          cleanup() {
+            docker rm -f pcvm-full-app >/dev/null 2>&1 || true
+            sudo chown -R "$(id -u):$(id -g)" "$data" >/dev/null 2>&1 || true
+            rm -rf "$data"
+          }
           trap cleanup EXIT
           chmod 0777 "$data"
           docker run -d --name pcvm-full-app -p 0:8080 -v "$data:/home/container" \
+            --read-only --security-opt no-new-privileges --cap-drop ALL \
+            --tmpfs /tmp:rw,nosuid,nodev,size=256m --tmpfs /run:rw,nosuid,nodev,size=16m \
             -e SOFTWARE=code-server -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 \
             -e CODE_SERVER_PASSWORD=pcvm-code-server-smoke pcvm:full-app-smoke
           for _ in $(seq 1 300); do
@@ -41,3 +49,12 @@ jobs:
           curl --fail --silent --show-error "http://127.0.0.1:${host_port}/" >/dev/null
           docker stop --time 40 pcvm-full-app
           test "$(docker inspect -f '{{.State.Running}}' pcvm-full-app)" = false
+      - name: Install every 2.0 generic application provider
+        env:
+          ARCH: ${{ inputs.architecture }}
+          PCVM_SMOKE_ALLOW_TAG: '1'
+        run: |
+          set -euo pipefail
+          for provider in bun-app deno-app go-app dotnet-app; do
+            bash scripts/candidate-smoke.sh app "$provider" pcvm:full-app-smoke "$ARCH"
+          done

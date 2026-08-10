@@ -2,7 +2,6 @@ package pcvm
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -34,12 +33,16 @@ type MemoryPlan struct {
 	OOMSource        string
 }
 
-var memoryReadFile = os.ReadFile
-
 func readMemorySnapshot() MemorySnapshot {
+	return readMemorySnapshotWith(DefaultDependencies())
+}
+
+func readMemorySnapshotWith(dependencies Dependencies) MemorySnapshot {
+	dependencies = dependencies.withDefaults()
+	readFile := dependencies.ReadFile
 	snapshot := MemorySnapshot{}
-	if raw, err := memoryReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		if current, readErr := memoryReadFile("/sys/fs/cgroup/memory.current"); readErr == nil {
+	if raw, err := readFile("/sys/fs/cgroup/memory.max"); err == nil {
+		if current, readErr := readFile("/sys/fs/cgroup/memory.current"); readErr == nil {
 			snapshot.CurrentMB = parseCgroupUsage(string(current))
 			snapshot.CurrentKnown = validCgroupUsage(string(current))
 		}
@@ -48,28 +51,28 @@ func readMemorySnapshot() MemorySnapshot {
 		}
 	}
 	if snapshot.LimitMB == 0 {
-		if raw, err := memoryReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
+		if raw, err := readFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
 			if limit := parseCgroupMemory(string(raw)); limit > 0 {
 				snapshot.Source, snapshot.LimitMB = "cgroup-v1", limit
-				if current, readErr := memoryReadFile("/sys/fs/cgroup/memory/memory.usage_in_bytes"); readErr == nil {
+				if current, readErr := readFile("/sys/fs/cgroup/memory/memory.usage_in_bytes"); readErr == nil {
 					snapshot.CurrentMB = parseCgroupUsage(string(current))
 					snapshot.CurrentKnown = validCgroupUsage(string(current))
 				}
 			}
 		}
 	}
-	if events, err := memoryReadFile("/sys/fs/cgroup/memory.events"); err == nil {
+	if events, err := readFile("/sys/fs/cgroup/memory.events"); err == nil {
 		snapshot.OOMKills = parseMemoryEvent(string(events), "oom_kill")
 		snapshot.OOMSource = "cgroup-v2"
 	}
 	if snapshot.OOMSource == "" {
-		if control, err := memoryReadFile("/sys/fs/cgroup/memory/memory.oom_control"); err == nil {
+		if control, err := readFile("/sys/fs/cgroup/memory/memory.oom_control"); err == nil {
 			snapshot.OOMKills = parseMemoryEvent(string(control), "oom_kill")
 			snapshot.OOMSource = "cgroup-v1"
 		}
 	}
 	if snapshot.LimitMB == 0 {
-		if limit, ok := parseServerMemory(os.Getenv("SERVER_MEMORY")); ok {
+		if limit, ok := parseServerMemory(dependencies.Getenv("SERVER_MEMORY")); ok {
 			snapshot.Source, snapshot.LimitMB = "SERVER_MEMORY", limit
 		}
 	}
@@ -158,7 +161,7 @@ func planMemory(spec MemorySpec, req Request, policy Policy, snapshot MemorySnap
 		} else {
 			plan.TargetMB = roundMemory(plan.LimitMB*80/100, 64)
 		}
-	case "node-heap", "php-limit", "dotnet-gc":
+	case "node-heap", "deno-heap", "go-limit", "php-limit", "dotnet-gc":
 		if plan.LimitMB > 0 {
 			plan.TargetMB = roundMemory(plan.LimitMB*75/100, 64)
 		}
@@ -235,6 +238,14 @@ func applyMemoryPlan(spec ProviderSpec, process ProcessSpec, plan MemoryPlan) (P
 	case "node-heap":
 		if plan.TargetMB > 0 {
 			process.Environment = upsertEnvironment(process.Environment, "NODE_OPTIONS", fmt.Sprintf("--max-old-space-size=%d", plan.TargetMB))
+		}
+	case "deno-heap":
+		if plan.TargetMB > 0 {
+			process.Environment = upsertEnvironment(process.Environment, "DENO_V8_FLAGS", fmt.Sprintf("--max-old-space-size=%d", plan.TargetMB))
+		}
+	case "go-limit":
+		if plan.TargetMB > 0 {
+			process.Environment = upsertEnvironment(process.Environment, "GOMEMLIMIT", fmt.Sprintf("%dMiB", plan.TargetMB))
 		}
 	case "php-limit":
 		if plan.TargetMB > 0 {
