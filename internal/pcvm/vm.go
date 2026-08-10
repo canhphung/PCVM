@@ -671,14 +671,32 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
 		"-drive", "if=pflash,format=raw,readonly=on,file=" + code,
 		"-drive", "if=pflash,format=raw,file=" + filepath.Join(vmDir, "uefi-vars.fd"),
-		"-drive", "if=none,file=" + filepath.Join(vmDir, "disk.qcow2") + ",format=qcow2,id=osdisk,cache=writeback,discard=unmap",
-		"-device", "virtio-blk-pci,drive=osdisk,bootindex=1", "-device", "virtio-scsi-pci,id=scsi0",
-		"-drive", "if=none,media=cdrom,readonly=on,file=" + filepath.Join(vmDir, "seed.iso") + ",format=raw,id=seed",
-		"-device", "scsi-cd,drive=seed,bootindex=99", "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0"}
+		"-drive", "if=none,file=" + filepath.Join(vmDir, "disk.qcow2") + ",format=qcow2,id=osdisk,cache=writeback,discard=unmap"}
 	if cfg.Arch == "amd64" {
+		args = append(args,
+			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1",
+			"-device", "virtio-scsi-pci,id=scsi0",
+		)
 		args = append([]string{"-machine", "q35", "-cpu", "max"}, args...)
 	} else {
+		// The ARM virt machine exposes virtio over MMIO. Using the PCI variants
+		// makes AAVMF attempt to load efi-virtio.rom, which is intentionally not
+		// present in the lightweight VM image and prevents the guest from booting.
+		args = append(args,
+			"-device", "virtio-blk-device,drive=osdisk,bootindex=1",
+			"-device", "virtio-scsi-device,id=scsi0",
+		)
 		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "max"}, args...)
+	}
+	args = append(args,
+		"-drive", "if=none,media=cdrom,readonly=on,file="+filepath.Join(vmDir, "seed.iso")+",format=raw,id=seed",
+		"-device", "scsi-cd,drive=seed,bus=scsi0.0,bootindex=99",
+		"-netdev", "user,id=net0",
+	)
+	if cfg.Arch == "amd64" {
+		args = append(args, "-device", "virtio-net-pci,netdev=net0")
+	} else {
+		args = append(args, "-device", "virtio-net-device,netdev=net0")
 	}
 	return args
 }

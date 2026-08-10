@@ -30,11 +30,18 @@ RUN apt-get update \
 
 FROM native-runtime AS minecraft
 
-FROM native-runtime AS apps
+FROM common AS apps
+# Keep the native compiler/linker needed by node-gyp and generic app builds,
+# but omit optional profiling, LTO and sanitizer payloads from this runtime
+# image. They are not part of PCVM's production build-toolchain contract.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends apache2 g++ gcc git libgssapi-krb5-2 libicu72 make nginx-light \
+    && apt-get install -y --no-install-recommends apache2 g++ gcc git libatomic1 libgssapi-krb5-2 libicu72 libssl3 make nginx-light zlib1g \
     && a2enmod proxy proxy_http headers \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -f /usr/bin/*-gcov* /usr/bin/*-lto-dump-* /usr/lib/gcc/*/*/lto1 \
+    && find /usr/lib/gcc /usr/lib/"$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
+       \( -type f -o -type l \) \
+       \( -name 'libasan*' -o -name 'libhwasan*' -o -name 'liblsan*' -o -name 'libtsan*' -o -name 'libubsan*' \) -delete \
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/* /usr/share/locale/*
 
 FROM native-runtime AS games
 ARG TARGETARCH
