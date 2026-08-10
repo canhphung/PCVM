@@ -575,7 +575,7 @@ func cloudInitUserDataForProvider(provider, hostname, arch string) string {
 func alpineCloudInitUserData(hostname, arch string) string {
 	_ = arch // the guest selects whichever serial device firmware made active
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
-	autologin := "#!/bin/sh\n/usr/local/sbin/pcvm-ready\nexec /bin/login -f pcvm\n"
+	autologin := "#!/bin/sh\nprintf '%s\\n' '[PCVM-GUEST] READY'\nexec /bin/login -f pcvm\n"
 	sudoCompat := `#!/bin/sh
 if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
     shift
@@ -587,33 +587,20 @@ if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
 fi
 exec /usr/bin/doas "$@"
 `
-	ready := vmGuestReadyScript()
 	firstBoot := `#!/bin/sh
 set -eu
-active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
-console=
-for candidate in $active_consoles ttyAMA0 ttyS0; do
-    case "$candidate" in
-        ttyAMA0|ttyS0)
-            if [ -c "/dev/$candidate" ]; then
-                console="$candidate"
-                break
-            fi
-            ;;
-    esac
-done
-[ -n "$console" ]
 mkdir -p /etc/doas.d
 rm -f /etc/doas.conf /etc/doas.d/*.conf
 printf '%s\n' 'permit nopass pcvm as root' > /etc/doas.conf
 chmod 0400 /etc/doas.conf
-line="$console::respawn:/sbin/getty -n -l /usr/local/sbin/pcvm-autologin -L $console 115200 vt100"
-if grep -q "^$console::" /etc/inittab; then
-    sed -i "\\|^$console::|c\\$line" /etc/inittab
-else
-    printf '%s\n' "$line" >> /etc/inittab
-fi
-rc-update add local default
+for console in ttyS0 ttyAMA0; do
+    line="$console::respawn:/sbin/getty -n -l /usr/local/sbin/pcvm-autologin -L $console 115200 vt100"
+    if grep -q "^$console::" /etc/inittab; then
+        sed -i "\\|^$console::|c\\$line" /etc/inittab
+    else
+        printf '%s\n' "$line" >> /etc/inittab
+    fi
+done
 passwd -l root >/dev/null 2>&1 || true
 passwd -l alpine >/dev/null 2>&1 || true
 kill -HUP 1
@@ -642,21 +629,13 @@ write_files:
     permissions: '0755'
     encoding: b64
     content: %s
-  - path: /usr/local/sbin/pcvm-ready
-    permissions: '0755'
-    encoding: b64
-    content: %s
-  - path: /etc/local.d/pcvm-ready.start
-    permissions: '0755'
-    encoding: b64
-    content: %s
   - path: /usr/local/sbin/pcvm-firstboot
     permissions: '0755'
     encoding: b64
     content: %s
 runcmd:
   - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
-	`, hostname, encode(autologin), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))) + "\n"
+	`, hostname, encode(autologin), encode(sudoCompat), encode(firstBoot))) + "\n"
 }
 
 func vmGuestReadyScript() string {
@@ -674,20 +653,7 @@ for candidate in $active_consoles ttyAMA0 ttyS0; do
     esac
 done
 [ -n "$console" ] || exit 1
-boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
-[ -n "$boot_id" ] || exit 1
-marker=/run/pcvm-ready.boot
-if [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null || true)" = "$boot_id" ]; then
-    exit 0
-fi
-if ! printf '%s\n' "$boot_id" > "$marker"; then
-    exit 1
-fi
-if printf '%s\n' '[PCVM-GUEST] READY' > "/dev/$console"; then
-    exit 0
-fi
-rm -f "$marker"
-exit 1
+printf '%s\n' '[PCVM-GUEST] READY' > "/dev/$console"
 `
 }
 
