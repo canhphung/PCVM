@@ -164,7 +164,7 @@ func TestVMValidationAndCloudInit(t *testing.T) {
 
 func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 	data := alpineCloudInitUserData("tiny-vm", "arm64")
-	for _, want := range []string{"hostname: tiny-vm", "shell: /bin/ash", "/etc/doas.d/pcvm.conf", "/etc/local.d/pcvm-ready.start", "/usr/local/bin/sudo"} {
+	for _, want := range []string{"hostname: tiny-vm", "shell: /bin/ash", "/etc/doas.d/pcvm.conf", "/etc/local.d/pcvm-ready.start", "/home/pcvm/.profile", "/usr/local/bin/sudo"} {
 		if !strings.Contains(data, want) {
 			t.Fatalf("Alpine cloud-init missing %q: %s", want, data)
 		}
@@ -179,13 +179,13 @@ func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 			decoded.Write(raw)
 		}
 	}
-	for _, script := range []string{"ttyAMA0", "/dev/ttyAMA0", "rc-update add local default", "[PCVM-GUEST] READY", `exec /usr/bin/doas -s "$@"`} {
+	for _, script := range []string{"ttyAMA0", "/dev/ttyAMA0", "rc-update add local default", "/proc/sys/kernel/random/boot_id", "[PCVM-GUEST] READY", `exec /usr/bin/doas -s "$@"`} {
 		if !strings.Contains(decoded.String(), script) {
 			t.Fatalf("Alpine cloud-init missing encoded %q", script)
 		}
 	}
-	if ready, reload := strings.Index(decoded.String(), "/usr/local/sbin/pcvm-ready\n"), strings.Index(decoded.String(), "kill -HUP 1\n"); ready < 0 || reload < 0 || ready > reload {
-		t.Fatal("Alpine first boot must announce readiness before reloading OpenRC init")
+	if strings.Count(decoded.String(), "/usr/local/sbin/pcvm-ready\n") != 1 {
+		t.Fatal("Alpine readiness must be emitted by the login profile, with local.d using the sealed helper directly")
 	}
 	if strings.Contains(data, "packages:") || strings.Contains(strings.ToLower(data), "password:") {
 		t.Fatal("Alpine provisioning downloads packages or persists a password")

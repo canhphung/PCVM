@@ -556,6 +556,7 @@ func alpineCloudInitUserData(hostname, arch string) string {
 	}
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
 	autologin := "#!/bin/sh\nexec /bin/login -f pcvm\n"
+	loginProfile := "# PCVM serial readiness is emitted only after the login shell exists.\n/usr/local/sbin/pcvm-ready\n"
 	sudoCompat := `#!/bin/sh
 if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
     shift
@@ -563,7 +564,7 @@ if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
 fi
 exec /usr/bin/doas "$@"
 `
-	ready := fmt.Sprintf("#!/bin/sh\necho \"[PCVM-GUEST] READY\" > /dev/%s\n", console)
+	ready := fmt.Sprintf("#!/bin/sh\nlock=/home/pcvm/.pcvm-ready-$(cat /proc/sys/kernel/random/boot_id)\nif mkdir \"$lock\" 2>/dev/null; then\n    echo \"[PCVM-GUEST] READY\" > /dev/%s\nfi\n", console)
 	firstBoot := fmt.Sprintf(`#!/bin/sh
 set -eu
 console=%s
@@ -576,7 +577,6 @@ fi
 rc-update add local default
 passwd -l root >/dev/null 2>&1 || true
 passwd -l alpine >/dev/null 2>&1 || true
-/usr/local/sbin/pcvm-ready
 kill -HUP 1
 `, console)
 	return fmt.Sprintf(`#cloud-config
@@ -598,6 +598,11 @@ write_files:
     permissions: '0755'
     encoding: b64
     content: %s
+  - path: /home/pcvm/.profile
+    owner: pcvm:pcvm
+    permissions: '0644'
+    encoding: b64
+    content: %s
   - path: /usr/local/bin/sudo
     permissions: '0755'
     encoding: b64
@@ -616,7 +621,7 @@ write_files:
     content: %s
 runcmd:
   - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
-`, hostname, encode(autologin), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))
+`, hostname, encode(autologin), encode(loginProfile), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))
 }
 
 func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory MemoryPlan) (ProcessSpec, error) {
