@@ -764,18 +764,15 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		)
 		args = append([]string{"-machine", "q35", "-cpu", "max"}, args...)
 	} else {
-		// ARM virt exposes native virtio-MMIO transports. They avoid PCI/ACPI
-		// emulation overhead under pure TCG and do not require EFI option ROMs.
-		// Automatic ARM guests are deliberately single-vCPU, avoiding the QEMU
-		// 7.2 SMP issue that originally motivated the PCI transport experiment.
+		// Use ROMless PCI transports: virtio-MMIO can starve Alpine's page
+		// allocator under QEMU 7.2 TCG. Cortex-A76 supplies ARMv8.2 LSE atomics,
+		// avoiding the LL/SC lockup seen with Cortex-A72 without exposing the
+		// expensive SVE surface of QEMU's max model.
 		args = append(args,
-			"-device", "virtio-blk-device,drive=osdisk,bootindex=1",
-			"-device", "virtio-scsi-device,id=scsi0",
+			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
+			"-device", "virtio-scsi-pci,id=scsi0,romfile=",
 		)
-		// A bounded ARMv8 CPU avoids the large SVE/SME feature surface exposed by
-		// `max`, which is dramatically slower under pure TCG while remaining a
-		// compatible baseline for the supported AArch64 cloud images.
-		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "cortex-a72"}, args...)
+		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "cortex-a76"}, args...)
 	}
 	args = append(args,
 		"-drive", "if=none,media=cdrom,readonly=on,file="+filepath.Join(vmDir, "seed.iso")+",format=raw,id=seed",
@@ -786,9 +783,9 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		args = append(args, "-device", "virtio-net-pci,netdev=net0")
 	} else {
 		args = append(args,
-			"-device", "virtio-net-device,netdev=net0",
+			"-device", "virtio-net-pci,netdev=net0,romfile=",
 			"-object", "rng-random,filename=/dev/urandom,id=rng0",
-			"-device", "virtio-rng-device,rng=rng0",
+			"-device", "virtio-rng-pci,rng=rng0,romfile=",
 		)
 	}
 	return args
