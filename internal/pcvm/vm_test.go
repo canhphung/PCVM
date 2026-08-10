@@ -179,7 +179,7 @@ func TestVMValidationAndCloudInit(t *testing.T) {
 
 func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 	data := alpineCloudInitUserData("tiny-vm", "arm64")
-	for _, want := range []string{"hostname: tiny-vm", "shell: /bin/ash", "/etc/doas.d/pcvm.conf", "/etc/local.d/pcvm-ready.start", "/usr/local/sbin/pcvm-autologin", "/usr/local/bin/sudo"} {
+	for _, want := range []string{"hostname: tiny-vm", "shell: /bin/ash", "/etc/doas.conf", "/etc/local.d/pcvm-ready.start", "/usr/local/sbin/pcvm-autologin", "/usr/local/bin/sudo"} {
 		if !strings.Contains(data, want) {
 			t.Fatalf("Alpine cloud-init missing %q: %s", want, data)
 		}

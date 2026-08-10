@@ -573,8 +573,8 @@ set -eu
 console=%s
 mkdir -p /etc/doas.d
 rm -f /etc/doas.conf /etc/doas.d/*.conf
-printf '%%s\n' 'permit nopass pcvm as root' > /etc/doas.d/pcvm.conf
-chmod 0400 /etc/doas.d/pcvm.conf
+printf '%%s\n' 'permit nopass pcvm as root' > /etc/doas.conf
+chmod 0400 /etc/doas.conf
 line="$console::respawn:/sbin/getty -n -l /usr/local/sbin/pcvm-autologin -L $console 115200 vt100"
 if grep -q "^$console::" /etc/inittab; then
     sed -i "\\|^$console::|c\\$line" /etc/inittab
@@ -598,7 +598,7 @@ users:
     shell: /bin/ash
     lock_passwd: true
 write_files:
-  - path: /etc/doas.d/pcvm.conf
+  - path: /etc/doas.conf
     permissions: '0400'
     content: |
       permit nopass pcvm as root
