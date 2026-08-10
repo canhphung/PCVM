@@ -6,7 +6,12 @@ func TestVersionsAndRuntimeMapping(t *testing.T) {
 	for _, tc := range []struct {
 		a, b string
 		want int
-	}{{"1.21.4", "1.21.1", 1}, {"1.20", "1.20.0", 0}, {"1.19.4", "1.20", -1}} {
+	}{
+		{"1.21.4", "1.21.1", 1}, {"1.20", "1.20.0", 0}, {"1.19.4", "1.20", -1},
+		{"1.21-rc1", "1.21-pre2", 1}, {"1.21", "1.21-rc1", 1},
+		{"1.0.0-alpha", "1.0.0-alpha.1", -1}, {"1.0.0-alpha.1", "1.0.0-alpha.beta", -1},
+		{"1.20.1-47.2.10", "1.20.1-47.2.9", 1}, {"24w14a", "24w13b", 1},
+	} {
 		got := CompareVersions(tc.a, tc.b)
 		if got != tc.want {
 			t.Errorf("CompareVersions(%q,%q)=%d", tc.a, tc.b, got)

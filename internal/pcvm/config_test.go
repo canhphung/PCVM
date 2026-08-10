@@ -1,6 +1,9 @@
 package pcvm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestConfigPolicyAndGitValidation(t *testing.T) {
 	t.Setenv("PCVM_HOME", t.TempDir())
@@ -68,5 +71,34 @@ func TestInvalidMaxPlayersIsNotSilentlyDefaulted(t *testing.T) {
 	}
 	if err := ValidateProviderRequest(catalogSpec(t, "rust"), cfg); err == nil {
 		t.Fatal("invalid MAX_PLAYERS was accepted")
+	}
+}
+
+func TestConfigRejectsInvalidBooleans(t *testing.T) {
+	for _, key := range []string{"AUTO_UPDATE", "ALLOW_USER_RESET", "PCVM_ALLOW_SYSTEM_RUNTIME", "CLEAR_CONSOLE"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv("PCVM_HOME", t.TempDir())
+			t.Setenv(key, "sometimes")
+			if _, err := ConfigFromEnv(); err == nil {
+				t.Fatalf("invalid %s was silently accepted", key)
+			}
+		})
+	}
+}
+
+func TestConfigRejectsInvalidPublicEnums(t *testing.T) {
+	for key, value := range map[string]string{
+		"SOURCE_MODE":         "auto",
+		"WEB_MODE":            "cgi",
+		"VM_DISK_COMPRESSION": "gzip",
+		"MODPACK_MODE":        "remote",
+	} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv("PCVM_HOME", t.TempDir())
+			t.Setenv(key, value)
+			if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("invalid %s=%q was accepted: %v", key, value, err)
+			}
+		})
 	}
 }

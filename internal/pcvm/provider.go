@@ -1,7 +1,6 @@
 package pcvm
 
 import (
-	"archive/zip"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -14,155 +13,65 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
+	"time"
 )
 
-type catalogProvider struct{ spec ProviderSpec }
+type catalogProvider struct {
+	spec    ProviderSpec
+	drivers providerDrivers
+	initErr error
+}
 
-func NewProvider(spec ProviderSpec) Provider               { return &catalogProvider{spec: spec} }
-func (p *catalogProvider) Spec() ProviderSpec              { return p.spec }
-func (p *catalogProvider) CompareVersions(a, b string) int { return CompareVersions(a, b) }
+func NewProvider(spec ProviderSpec) Provider {
+	drivers, err := compiledProviderDrivers(spec)
+	return &catalogProvider{spec: spec, drivers: drivers, initErr: err}
+}
+func (p *catalogProvider) Spec() ProviderSpec { return p.spec }
+func (p *catalogProvider) CompareVersions(a, b string) int {
+	if p.drivers.Comparator == nil {
+		return CompareVersions(a, b)
+	}
+	return p.drivers.Comparator.Compare(a, b)
+}
 
 func (p *catalogProvider) BuildProcess(ctx context.Context, cfg Config, state LaunchState, memory MemoryPlan) (ProcessSpec, error) {
-	if p.spec.Installer == "qemu-vm" {
-		process, err := p.buildVMProcess(cfg, state, memory)
-		if err != nil {
-			return ProcessSpec{}, err
-		}
-		return applyMemoryPlan(p.spec, process, memory)
+	if p.initErr != nil {
+		return ProcessSpec{}, p.initErr
 	}
-	if p.spec.Installer == "web" || p.spec.Installer == "code-server" || len(p.spec.MenuPath) > 0 && p.spec.MenuPath[0] == "games" {
-		process, err := p.buildServiceProcess(ctx, cfg, state)
-		if err != nil {
-			return ProcessSpec{}, err
-		}
-		return applyMemoryPlan(p.spec, process, memory)
+	if err := p.drivers.Validator.ValidateConfig(p, cfg); err != nil {
+		return ProcessSpec{}, err
 	}
-	readiness := p.spec.Readiness
-	if readiness.Mode == "" && len(state.ReadyPatterns) > 0 {
-		readiness = ReadinessSpec{Mode: "regex", Patterns: append([]string(nil), state.ReadyPatterns...)}
+	configured, err := p.drivers.Configurator.Configure(ctx, p, cfg, state)
+	if err != nil {
+		return ProcessSpec{}, fmt.Errorf("configure provider %s: %w", p.spec.ID, err)
 	}
-	control := p.spec.Control
-	if control.Mode == "" {
-		control = ControlSpec{Mode: "stdin", StopCommand: state.StopCommand}
+	process, err := p.drivers.Process.Build(ctx, p, cfg, configured, memory)
+	if err != nil {
+		return ProcessSpec{}, err
 	}
-	command := append([]string(nil), state.Command...)
-	switch p.spec.ID {
-	case "powernukkitx":
-		command = append(command, "--skip-setup", "--accept-license", "--language", "eng", "--server-name", cfg.Request.ServerName, "--port", strconv.Itoa(cfg.AllocationPort))
-	case "cloudburst-nukkit":
-		command = append(command, "--language", "eng")
-	}
-	process := ProcessSpec{Command: command, Directory: state.WorkingDirectory,
-		Environment: append([]string(nil), state.Environment...), ReadyPatterns: append([]string(nil), state.ReadyPatterns...),
-		StopCommand: state.StopCommand, Readiness: readiness, Control: control}
-	return applyMemoryPlan(p.spec, process, memory)
+	return p.drivers.Control.Apply(p, cfg, configured, process)
 }
 
 func (p *catalogProvider) Resolve(ctx context.Context, req Request, httpc *HTTPClient) (Resolved, error) {
-	if p.spec.ID == "powernukkitx" && req.RuntimeVersion != "" && req.RuntimeVersion != "auto" && req.RuntimeVersion != "21" {
-		return Resolved{}, fmt.Errorf("PowerNukkitX requires RUNTIME_VERSION=auto or 21")
+	if p.initErr != nil {
+		return Resolved{}, p.initErr
 	}
-	if p.spec.ID == "cloudburst-nukkit" && req.RuntimeVersion != "" && req.RuntimeVersion != "auto" && req.RuntimeVersion != "8" {
-		return Resolved{}, fmt.Errorf("Cloudburst Nukkit requires RUNTIME_VERSION=auto or 8")
+	if err := p.drivers.Validator.ValidateRequest(p, req); err != nil {
+		return Resolved{}, err
 	}
-	var artifact Artifact
-	var err error
-	switch p.spec.Resolver {
-	case "mojang":
-		artifact, err = resolveMojang(ctx, req, httpc)
-	case "papermc":
-		artifact, err = resolvePaper(ctx, p.spec.Options["project"], req, httpc)
-	case "purpur":
-		artifact, err = resolvePurpur(ctx, req, httpc)
-	case "pufferfish":
-		artifact, err = resolvePufferfish(ctx, req, httpc)
-	case "fabric":
-		artifact, err = resolveFabric(ctx, req, httpc)
-	case "forge":
-		artifact, err = resolveMaven(ctx, req, httpc, "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml", "https://maven.minecraftforge.net/net/minecraftforge/forge/%s/forge-%s-installer.jar")
-	case "neoforge":
-		artifact, err = resolveMaven(ctx, req, httpc, "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml", "https://maven.neoforged.net/releases/net/neoforged/neoforge/%s/neoforge-%s-installer.jar")
-	case "bungeecord":
-		artifact, err = resolveBungee(ctx, req, httpc)
-	case "bedrock":
-		artifact, err = resolveBedrock(ctx, httpc)
-	case "cloudburst-nukkit":
-		artifact, err = resolveCloudburstNukkit(ctx, req, httpc)
-	case "pypi-endstone":
-		artifact, err = resolveEndstone(ctx, req, httpc)
-	case "pocketmine":
-		artifact, err = resolveGitHub(ctx, req, httpc, "pmmp/PocketMine-MP", `(?i)\.phar$`)
-	case "github-release":
-		artifact, err = resolveGitHub(ctx, req, httpc, p.spec.Options["repository"], p.spec.Options["asset_regex"])
-	case "github-release-arch":
-		pattern := p.spec.Options["asset_regex_"+req.Architecture]
-		if pattern == "" {
-			err = fmt.Errorf("provider %q has no %s release artifact", p.spec.ID, req.Architecture)
-		} else {
-			artifact, err = resolveGitHub(ctx, req, httpc, p.spec.Options["repository"], pattern)
-		}
-	case "mta-pinned":
-		artifact, err = resolvePinnedMTA(req, p.spec.Options)
-	case "local-app":
-		artifact = Artifact{Kind: "source", Version: req.Version, Build: req.Build}
-	case "local-service":
-		artifact = Artifact{Kind: "local", Version: "system", Build: "release"}
-	case "steamcmd":
-		artifact = Artifact{Kind: "steam-app", Version: envLatest(req.Version), Build: envLatest(req.Build), Metadata: map[string]string{"appid": p.spec.Options["appid"]}}
-	case "terraria":
-		artifact, err = resolveTerraria(ctx, req, httpc)
-	case "factorio":
-		artifact, err = resolveFactorio(ctx, req, httpc)
-	case "vm-image":
-		artifact, err = resolveVMImage(p.spec, req)
-	default:
-		err = fmt.Errorf("unsupported resolver %q", p.spec.Resolver)
-	}
+	artifact, err := p.drivers.Resolver.Resolve(ctx, p, req, httpc)
 	if err != nil {
 		return Resolved{}, err
 	}
 	if (p.spec.Installer == "openmp" || p.spec.Installer == "code-server") && !validHexDigest(artifact.SHA256, 64) {
 		return Resolved{}, fmt.Errorf("%s release asset has no upstream SHA-256 digest", p.spec.Name)
 	}
-	runtimeVersion := req.RuntimeVersion
-	if runtimeVersion == "" || runtimeVersion == "auto" {
-		switch p.spec.Runtime {
-		case "java":
-			switch p.spec.ID {
-			case "velocity":
-				runtimeVersion = "21"
-			case "powernukkitx":
-				runtimeVersion = "21"
-			case "cloudburst-nukkit":
-				runtimeVersion = "8"
-			case "lavalink":
-				runtimeVersion = "17"
-			default:
-				runtimeVersion = JavaVersionFor(artifact.Version)
-			}
-		case "node":
-			runtimeVersion = "24"
-		case "python":
-			runtimeVersion = "3.13"
-		case "php-pmmp":
-			runtimeVersion = "pmmp"
-		case "steamcmd":
-			runtimeVersion = "1"
-		case "dotnet":
-			runtimeVersion = "8"
-		case "caddy":
-			runtimeVersion = "2"
-		default:
-			runtimeVersion = "native"
-		}
+	runtimeVersion, err := resolveRuntimeVersion(p.spec, req.RuntimeVersion, artifact)
+	if err != nil {
+		return Resolved{}, err
 	}
-	patterns := append([]string(nil), p.spec.ReadyPatterns...)
-	if req.AppReady != "" {
-		patterns = []string{req.AppReady}
-	}
-	return Resolved{Artifact: artifact, RuntimeKind: p.spec.Runtime, RuntimeVersion: runtimeVersion, ReadyPatterns: patterns, StopCommand: p.spec.StopCommand}, nil
+	return Resolved{Artifact: artifact, RuntimeKind: p.spec.Runtime, RuntimeVersion: runtimeVersion}, nil
 }
 
 func envLatest(value string) string {
@@ -662,9 +571,9 @@ func resolveGitHub(ctx context.Context, req Request, h *HTTPClient, repo, assetP
 	return Artifact{}, fmt.Errorf("release contains no matching artifact")
 }
 
-func resolvePinnedMTA(req Request, options map[string]string) (Artifact, error) {
-	version, build := options["version"], options["build"]
-	if version == "" || build == "" || options["main_url"] == "" || !validHexDigest(options["main_sha256"], 64) {
+func resolvePinnedMTA(req Request, options DriverOptions) (Artifact, error) {
+	version, build := options.Version, options.Build
+	if version == "" || build == "" || options.MainURL == "" || !validHexDigest(options.MainSHA256, 64) {
 		return Artifact{}, fmt.Errorf("MTA catalog entry is incomplete")
 	}
 	if req.Version != "" && req.Version != "latest" && req.Version != version {
@@ -674,161 +583,91 @@ func resolvePinnedMTA(req Request, options map[string]string) (Artifact, error) 
 		return Artifact{}, fmt.Errorf("MTA build %q is not pinned by this PCVM release", req.Build)
 	}
 	return Artifact{
-		URL: options["main_url"], FileName: "multitheftauto-linux-" + version + "-" + build + ".tar.gz",
-		Kind: "tar.gz", SHA256: options["main_sha256"], Version: version, Build: build,
+		URL: options.MainURL, FileName: "multitheftauto-linux-" + version + "-" + build + ".tar.gz",
+		Kind: "tar.gz", SHA256: options.MainSHA256, Version: version, Build: build,
 	}, nil
 }
 
 func (p *catalogProvider) Install(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
+	return p.installWithDriver(ctx, ic, resolved, false)
+}
+
+// Update exposes the updater half of the compiled provider contract without
+// widening the legacy Provider interface used by tests and orchestration. New
+// reconciliation code can type-assert this capability while old callers retain
+// behavior parity through Install.
+func (p *catalogProvider) Update(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
+	return p.installWithDriver(ctx, ic, resolved, true)
+}
+
+func (p *catalogProvider) installWithDriver(ctx context.Context, ic InstallContext, resolved Resolved, update bool) (Resolved, error) {
+	if p.initErr != nil {
+		return resolved, p.initErr
+	}
 	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
 	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
 		return resolved, err
 	}
-	switch p.spec.Installer {
-	case "jar":
-		target := filepath.Join(managed, resolved.Artifact.Version+"-"+resolved.Artifact.Build+"-server.jar")
-		if err := copyFile(ic.Artifact, target, 0o640); err != nil {
-			return resolved, err
-		}
-		resolved.WorkDir = ic.Home
-		resolved.Command = []string{ic.Runtime, "-jar", target}
-		if strings.HasPrefix(p.spec.Family, "minecraft-java-") {
-			resolved.Command = append(resolved.Command, "nogui")
-		}
-		if p.spec.ID == "lavalink" {
-			config := filepath.Join(ic.Home, "application.yml")
-			if _, err := os.Stat(config); os.IsNotExist(err) {
-				port := envDefault("SERVER_PORT", "2333")
-				body := fmt.Sprintf("server:\n  port: %s\nlavalink:\n  server:\n    password: youshallnotpass\n", port)
-				if err := os.WriteFile(config, []byte(body), 0o640); err != nil {
-					return resolved, err
-				}
-			}
-		}
-	case "phar":
-		target := filepath.Join(managed, resolved.Artifact.Version+"-PocketMine-MP.phar")
-		if err := copyFile(ic.Artifact, target, 0o640); err != nil {
-			return resolved, err
-		}
-		resolved.WorkDir = ic.Home
-		resolved.Command = []string{ic.Runtime, target, "--no-wizard"}
-		resolved.Environment = []string{"PHPRC="}
-	case "zip":
-		versionRoot := filepath.Join(managed, resolved.Artifact.Version)
-		if err := os.MkdirAll(versionRoot, 0o750); err != nil {
-			return resolved, err
-		}
-		if err := extractZipSafe(ic.Artifact, versionRoot); err != nil {
-			return resolved, err
-		}
-		if err := linkMutableData(ic.Home, versionRoot, []string{"worlds"}, []string{"server.properties", "allowlist.json", "permissions.json"}); err != nil {
-			return resolved, err
-		}
-		resolved.WorkDir = versionRoot
-		resolved.Command = []string{filepath.Join(versionRoot, "bedrock_server")}
-		resolved.Environment = []string{"LD_LIBRARY_PATH=."}
-	case "java-installer":
-		managed = filepath.Join(managed, resolved.Artifact.Version)
-		if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
-			return resolved, err
-		}
-		cmd := exec.CommandContext(ctx, ic.Runtime, "-jar", ic.Artifact, "--installServer")
-		cmd.Dir = managed
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return resolved, fmt.Errorf("installer: %w", err)
-		}
-		resolved.WorkDir = managed
-		resolved.Command = []string{ic.Runtime, "@user_jvm_args.txt", "@libraries/net/minecraftforge/forge/" + resolved.Artifact.Version + "/unix_args.txt", "nogui"}
-		if p.spec.ID == "neoforge" {
-			resolved.Command = []string{ic.Runtime, "@user_jvm_args.txt", "@libraries/net/neoforged/neoforge/" + resolved.Artifact.Version + "/unix_args.txt", "nogui"}
-		}
-		if err := linkMutableData(ic.Home, managed, []string{"world", "world_nether", "world_the_end", "mods", "config", "defaultconfigs"}, []string{"server.properties", "eula.txt", "ops.json", "whitelist.json", "banned-ips.json", "banned-players.json"}); err != nil {
-			return resolved, err
-		}
-	case "node-app", "python-app":
-		return p.installApp(ctx, ic, resolved)
-	case "web":
-		return p.installWeb(ic, resolved)
-	case "steamcmd":
-		return p.installSteam(ctx, ic, resolved)
-	case "terraria":
-		return p.installTerraria(ic, resolved)
-	case "factorio":
-		return p.installFactorio(ctx, ic, resolved)
-	case "tmodloader":
-		return p.installTModLoader(ic, resolved)
-	case "endstone":
-		return p.installEndstone(ctx, ic, resolved)
-	case "openmp":
-		return p.installOpenMP(ic, resolved)
-	case "mtasa":
-		return p.installMTA(ctx, ic, resolved)
-	case "code-server":
-		return p.installCodeServer(ic, resolved)
-	case "qemu-vm":
-		return p.installVM(ctx, ic, resolved)
-	default:
-		return resolved, fmt.Errorf("unsupported installer %q", p.spec.Installer)
+	var installed Resolved
+	var err error
+	if update {
+		installed, err = p.drivers.Updater.Update(ctx, p, ic, resolved)
+	} else {
+		installed, err = p.drivers.Installer.Install(ctx, p, ic, resolved)
 	}
-	if p.spec.RequiresEULA && ic.Request.AcceptEULA {
-		if err := os.WriteFile(filepath.Join(resolved.WorkDir, "eula.txt"), []byte("eula=true\n"), 0o640); err != nil {
-			return resolved, err
-		}
+	if err != nil {
+		return installed, err
 	}
-	return resolved, nil
+	installed, err = activateStagedRelease(ic, p.spec, installed, time.Now())
+	if err != nil {
+		cleanupFailedGenericRelease(ic.ControlDir, p.spec, installed)
+		return installed, fmt.Errorf("activate staged release: %w", err)
+	}
+	return installed, nil
 }
 
 func (p *catalogProvider) installEndstone(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
 	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
-	venv := filepath.Join(managed, "venv-"+resolved.Artifact.Version+"-py"+resolved.RuntimeVersion)
-	venvPython := filepath.Join(venv, "bin", "python3")
-	if _, err := os.Stat(venvPython); err != nil && !os.IsNotExist(err) {
-		return resolved, fmt.Errorf("inspect Endstone virtualenv: %w", err)
-	} else if os.IsNotExist(err) {
-		staged, err := os.MkdirTemp(managed, ".venv-*")
-		if err != nil {
-			return resolved, err
+	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
+		return resolved, err
+	}
+	candidate, err := os.MkdirTemp(managed, ".candidate-*")
+	if err != nil {
+		return resolved, err
+	}
+	candidateLive := true
+	defer func() {
+		if candidateLive {
+			_ = os.RemoveAll(candidate)
 		}
-		stagedComplete := false
-		defer func() {
-			if !stagedComplete {
-				_ = os.RemoveAll(staged)
-			}
-		}()
-		environment, envErr := processUserEnvironment(p.spec.ID, ic.Home, os.Environ())
-		if envErr != nil {
-			return resolved, envErr
-		}
-		environment = upsertEnvironment(environment, "PATH", filepath.Dir(ic.Runtime)+string(os.PathListSeparator)+os.Getenv("PATH"))
-		cmd := exec.CommandContext(ctx, ic.Runtime, "-m", "venv", staged)
-		cmd.Env = environment
-		cmd.Stdout, cmd.Stderr = ic.Out, ic.Err
-		if err := cmd.Run(); err != nil {
-			return resolved, fmt.Errorf("create Endstone virtualenv: %w", err)
-		}
-		stagedPython := filepath.Join(staged, "bin", "python3")
-		cmd = exec.CommandContext(ctx, stagedPython, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--only-binary=:all:", "--index-url", "https://pypi.org/simple", "--upgrade", ic.Artifact)
-		cmd.Stdout, cmd.Stderr = ic.Out, ic.Err
-		cmd.Env = upsertEnvironment(environment, "PIP_CONFIG_FILE", os.DevNull)
-		cmd.Env = upsertEnvironment(cmd.Env, "PIP_EXTRA_INDEX_URL", "")
-		cmd.Env = upsertEnvironment(cmd.Env, "PIP_TRUSTED_HOST", "")
-		cmd.Env = upsertEnvironment(cmd.Env, "PIP_NO_INPUT", "1")
-		if err := cmd.Run(); err != nil {
-			return resolved, fmt.Errorf("install Endstone wheel: %w", err)
-		}
-		if err := os.Rename(staged, venv); err != nil {
-			return resolved, fmt.Errorf("activate Endstone virtualenv: %w", err)
-		}
-		stagedComplete = true
+	}()
+	sitePackages := filepath.Join(candidate, "site-packages")
+	environment, envErr := processUserEnvironment(p.spec.ID, ic.Home, os.Environ())
+	if envErr != nil {
+		return resolved, envErr
+	}
+	environment = upsertEnvironment(environment, "PATH", filepath.Dir(ic.Runtime)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd := exec.CommandContext(ctx, ic.Runtime, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--only-binary=:all:", "--index-url", "https://pypi.org/simple", "--target", sitePackages, ic.Artifact)
+	cmd.Stdout, cmd.Stderr = ic.Out, ic.Err
+	cmd.Env = upsertEnvironment(environment, "PIP_CONFIG_FILE", os.DevNull)
+	cmd.Env = upsertEnvironment(cmd.Env, "PIP_EXTRA_INDEX_URL", "")
+	cmd.Env = upsertEnvironment(cmd.Env, "PIP_TRUSTED_HOST", "")
+	cmd.Env = upsertEnvironment(cmd.Env, "PIP_NO_INPUT", "1")
+	if err := cmd.Run(); err != nil {
+		return resolved, fmt.Errorf("install Endstone wheel: %w", err)
+	}
+	if info, err := os.Lstat(filepath.Join(sitePackages, "endstone")); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return resolved, fmt.Errorf("Endstone wheel did not install a regular package tree")
 	}
 	if err := ensureEndstoneProperties(ic); err != nil {
 		return resolved, err
 	}
-	resolved.WorkDir = ic.Home
-	resolved.Command = []string{venvPython, "-m", "endstone", "--server-folder", ic.Home, "--yes", "--remote", "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/v2"}
+	resolved.WorkDir = candidate
+	resolved.Command = []string{ic.Runtime, "-m", "endstone", "--server-folder", ic.Home, "--yes", "--remote", "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/v2"}
 	resolved.Environment = upsertEnvironment(resolved.Environment, "PYTHONUNBUFFERED", "1")
+	resolved.Environment = upsertEnvironment(resolved.Environment, "PYTHONDONTWRITEBYTECODE", "1")
+	resolved.Environment = upsertEnvironment(resolved.Environment, "PYTHONPATH", sitePackages)
+	candidateLive = false
 	return resolved, nil
 }
 
@@ -848,40 +687,18 @@ func ensureEndstoneProperties(ic InstallContext) error {
 }
 
 func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r Resolved) (Resolved, error) {
-	source := filepath.Join(ic.Home, "app")
+	source, reused, err := p.materializeGenericSource(ctx, ic, r)
+	if err != nil {
+		return r, err
+	}
+	completed := false
+	defer func() {
+		if !completed && !reused && ic.Request.SourceMode == "git" {
+			_ = os.RemoveAll(source)
+		}
+	}()
 	if ic.Request.SourceMode == "git" {
-		if ic.Request.GitURL == "" {
-			return r, fmt.Errorf("GIT_URL is required")
-		}
-		if _, err := os.Stat(filepath.Join(source, ".git")); os.IsNotExist(err) {
-			cloneFrom := ic.Request.GitURL
-			cloneArgs := []string{"clone", "--depth", "1", "--branch", ic.Request.GitBranch, "--", cloneFrom, source}
-			if ic.PreparedSource != "" {
-				cloneFrom = ic.PreparedSource
-				cloneArgs = []string{"clone", "--no-local", "--", cloneFrom, source}
-			}
-			cmd := exec.CommandContext(ctx, "git", cloneArgs...)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				return r, err
-			}
-			if ic.PreparedSource != "" {
-				cmd = exec.CommandContext(ctx, "git", "-C", source, "remote", "set-url", "origin", ic.Request.GitURL)
-				if err := cmd.Run(); err != nil {
-					return r, err
-				}
-			}
-		} else {
-			cmd := exec.CommandContext(ctx, "git", "-C", source, "pull", "--ff-only", "origin", ic.Request.GitBranch)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				return r, fmt.Errorf("update Git source: %w", err)
-			}
-		}
-	} else {
-		source = ic.Home
+		r.RollbackMode = "staged"
 	}
 	entry := ic.Request.EntryFile
 	if entry == "" {
@@ -891,7 +708,7 @@ func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r R
 			entry = "main.py"
 		}
 	}
-	entry, err := cleanRelativeEntry(entry)
+	entry, err = cleanRelativeEntry(entry)
 	if err != nil {
 		return r, err
 	}
@@ -919,7 +736,7 @@ func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r R
 	}
 	runtimePath := ic.Runtime
 	if p.spec.ID == "node-bot" {
-		if _, err := os.Stat(filepath.Join(source, "package.json")); err == nil {
+		if _, err := os.Stat(filepath.Join(source, "package.json")); err == nil && !reused {
 			npm := filepath.Join(filepath.Dir(ic.Runtime), "npm")
 			npmArgs := []string{"install", "--omit=dev", "--no-audit", "--no-fund"}
 			if _, err := os.Stat(filepath.Join(source, "package-lock.json")); err == nil {
@@ -945,29 +762,49 @@ func (p *catalogProvider) installApp(ctx context.Context, ic InstallContext, r R
 			}
 		}
 	} else {
-		venv := filepath.Join(ic.ControlDir, "managed", p.spec.ID, "venv-"+r.RuntimeVersion)
-		venvPython := filepath.Join(venv, "bin", "python3")
-		if _, err := os.Stat(venvPython); os.IsNotExist(err) {
-			cmd := exec.CommandContext(ctx, ic.Runtime, "-m", "venv", venv)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				return r, fmt.Errorf("create Python virtualenv: %w", err)
+		if ic.Request.SourceMode == "git" {
+			sitePackages := filepath.Join(source, ".pcvm-site-packages")
+			if _, err := os.Stat(filepath.Join(source, "requirements.txt")); err == nil && !reused {
+				if err := secureMkdirAll(source, sitePackages, 0o750); err != nil {
+					return r, err
+				}
+				cmd := exec.CommandContext(ctx, ic.Runtime, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--target", sitePackages, "-r", "requirements.txt")
+				cmd.Dir = source
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					return r, fmt.Errorf("install Python dependencies: %w", err)
+				}
 			}
-		}
-		if _, err := os.Stat(filepath.Join(source, "requirements.txt")); err == nil {
-			cmd := exec.CommandContext(ctx, venvPython, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "-r", "requirements.txt")
-			cmd.Dir = source
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				return r, fmt.Errorf("install Python dependencies: %w", err)
+			runtimePath = ic.Runtime
+			r.Environment = upsertEnvironment(r.Environment, "PYTHONPATH", sitePackages)
+		} else {
+			venvRoot := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
+			venv := filepath.Join(venvRoot, "venv-"+r.RuntimeVersion)
+			venvPython := filepath.Join(venv, "bin", "python3")
+			if _, err := os.Stat(venvPython); os.IsNotExist(err) {
+				cmd := exec.CommandContext(ctx, ic.Runtime, "-m", "venv", venv)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					return r, fmt.Errorf("create Python virtualenv: %w", err)
+				}
 			}
+			if _, err := os.Stat(filepath.Join(source, "requirements.txt")); err == nil {
+				cmd := exec.CommandContext(ctx, venvPython, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "-r", "requirements.txt")
+				cmd.Dir = source
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					return r, fmt.Errorf("install Python dependencies: %w", err)
+				}
+			}
+			runtimePath = venvPython
 		}
-		runtimePath = venvPython
 	}
 	r.WorkDir = source
 	r.Command = append([]string{runtimePath, entry}, args...)
+	completed = true
 	return r, nil
 }
 
@@ -1093,59 +930,6 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 	return os.Rename(name, dst)
 }
-func extractZipSafe(path, dst string) error {
-	z, err := zip.OpenReader(path)
-	if err != nil {
-		return err
-	}
-	defer z.Close()
-	for _, f := range z.File {
-		clean, target, err := archiveTarget(dst, f.Name)
-		if err != nil {
-			return err
-		}
-		if f.FileInfo().IsDir() {
-			if err := secureMkdirAll(dst, target, 0o750); err != nil {
-				return err
-			}
-			continue
-		}
-		if f.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("archive may not contain symlink %q", f.Name)
-		}
-		if info, err := os.Lstat(target); err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("refusing existing symlink archive target %q", clean)
-			}
-			if isBedrockConfig(clean) {
-				continue
-			}
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-		in, err := f.Open()
-		if err != nil {
-			return err
-		}
-		writeErr := writeArchiveRegular(dst, target, in, f.Mode()|0o500)
-		closeErr := in.Close()
-		if writeErr != nil {
-			return writeErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-	}
-	return nil
-}
-func isBedrockConfig(name string) bool {
-	switch filepath.Base(name) {
-	case "server.properties", "allowlist.json", "permissions.json":
-		return true
-	}
-	return false
-}
-
 func linkMutableData(home, work string, dirs, files []string) error {
 	for _, name := range append(dirs, files...) {
 		shared, local := filepath.Join(home, name), filepath.Join(work, name)

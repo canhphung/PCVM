@@ -12,8 +12,10 @@ jobs:
   resolver-smoke:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.x'
           cache: false
@@ -23,7 +25,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           go run ./cmd/runtime-manifest -out /tmp/runtime-manifest.json
-          jq -e 'length == 27 and all(.[]; (.sha256 | length) == 64)' /tmp/runtime-manifest.json
+          jq -e '
+            .schema == 1 and .release == "2.0.0" and .compatibility == "pcvm>=2.0.0"
+            and (.packs | length) == 38
+            and all(.packs[];
+              (.id | length) > 0
+              and (.upstream_version | type == "string" and length > 0 and test("^[[:print:]]+$"))
+              and (.sha256 | length) == 64
+              and (.tree_sha256 | length) == 64 and .size > 0)
+          ' /tmp/runtime-manifest.json
           diff -u runtime-manifest.json /tmp/runtime-manifest.json
       - name: Validate Steam App IDs without downloading games
         run: |
@@ -31,8 +41,8 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libc6:i386 lib32gcc-s1
-          url=$(jq -r '.[] | select(.kind == "steamcmd" and .architecture == "amd64") | .url' runtime-manifest.json)
-          sha=$(jq -r '.[] | select(.kind == "steamcmd" and .architecture == "amd64") | .sha256' runtime-manifest.json)
+          url=$(jq -r '.packs[] | select(.kind == "steamcmd" and .architecture == "amd64") | .url' runtime-manifest.json)
+          sha=$(jq -r '.packs[] | select(.kind == "steamcmd" and .architecture == "amd64") | .sha256' runtime-manifest.json)
           curl --fail --location --retry 3 "$url" -o /tmp/steamcmd.tar.gz
           echo "$sha  /tmp/steamcmd.tar.gz" | sha256sum --check
           mkdir /tmp/steamcmd
@@ -72,6 +82,7 @@ jobs:
 
           catalog = json.loads(pathlib.Path("internal/pcvm/catalog.json").read_text())
           cache = {}
+          checked = 0
           for provider in catalog["providers"]:
               for image in provider.get("vm_images", []):
                   url = image["url"]
@@ -100,5 +111,8 @@ jobs:
                   found = next((match.group(1).lower() for pattern in patterns if (match := re.search(pattern, cache[manifest_url]))), None)
                   if found != expected:
                       raise SystemExit(f"checksum manifest mismatch for {provider['id']} {image['version']} {image['architecture']}")
-          print("verified 24 immutable VM image checksums")
+                  checked += 1
+          if checked == 0:
+              raise SystemExit("catalog contains no VM images")
+          print(f"verified {checked} immutable VM image checksums")
           PY

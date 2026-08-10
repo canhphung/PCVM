@@ -8,9 +8,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
-  attestations: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -20,54 +17,134 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.x'
           cache: false
-      - run: go test -race -coverprofile=coverage.out ./...
+      - run: go test -race ./...
+      - run: go test -covermode=atomic -coverprofile=coverage.out ./internal/pcvm
       - run: go vet ./...
+      - name: Fuzz security parsers
+        run: |
+          set -euo pipefail
+          go test ./internal/pcvm -run='^$' -fuzz='^FuzzArchiveTargetStaysWithinRoot$' -fuzztime=10s
+          go test ./internal/pcvm -run='^$' -fuzz='^FuzzGitURLValidation$' -fuzztime=10s
+          go test ./internal/pcvm -run='^$' -fuzz='^FuzzStateParserIsReadOnly$' -fuzztime=10s
+      - name: Check known Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+      - name: Enforce core coverage gate
+        run: go run ./cmd/core-coverage -profile coverage.out -threshold 80
       - name: Validate generated assets
         run: |
+          set -euo pipefail
           go run ./cmd/pcvm version
-          jq -e '.meta.version == "PTDL_v2" and .startup == "/usr/local/bin/pcvm run"' egg/egg-pcvm.json
-          jq -e 'length == 27 and all(.[]; (.sha256 | length) == 64)' runtime-manifest.json
-          jq -e '.schema == 5 and .version == "1.8.0" and (.providers | length) == 43 and all(.providers[]; (.memory.strategy | length) > 0 and .memory.recommended_mb > 0 and .memory.hard_minimum_mb >= 0) and ([.providers[].vm_images[]?] | length) == 24 and ([.providers[].vm_images[]? | select(.deprecated != true)] | length) == 20 and ([.providers[].vm_images[]? | select(.deprecated == true)] | length) == 4' internal/pcvm/catalog.json
-          jq -e '.docker_images == {
-            "PCVM 1.8.0 - Full (43 providers)":"ghcr.io/canhphung/pcvm:1.8.0",
-            "PCVM 1.8.0 - Core (21 providers)":"ghcr.io/canhphung/pcvm:1.8.0-core",
-            "PCVM 1.8.0 - Games (38 providers)":"ghcr.io/canhphung/pcvm:1.8.0-games",
-            "PCVM 1.8.0 - Virtual Machines (26 providers)":"ghcr.io/canhphung/pcvm:1.8.0-vm"
-          }' egg/egg-pcvm.json
-          jq -e '.file_denylist == [".pcvm"]' egg/egg-pcvm.json
-          jq -e '.features == ["eula"] and ([.variables[].env_variable] | index("ACCEPT_MINECRAFT_EULA") | not)' egg/egg-pcvm.json
+          go run ./cmd/egggen -check
+          jq -e '.schema == 6 and .version == "2.0.0" and (.providers | length) > 0 and ([.providers[].id] | unique | length) == (.providers | length) and all(.providers[]; (.memory.strategy | length) > 0 and .memory.recommended_mb > 0 and .memory.hard_minimum_mb >= 0)' internal/pcvm/catalog.json
+          jq -e '
+            .schema == 1 and .release == "2.0.0" and .compatibility == "pcvm>=2.0.0"
+            and (.packs | length) == 38
+            and ([.packs[].id] | unique | length) == (.packs | length)
+            and all(.packs[];
+              (.id | length) > 0
+              and (.upstream_version | type == "string" and length > 0 and test("^[[:print:]]+$"))
+              and (.sha256 | test("^[0-9a-f]{64}$"))
+              and (.tree_sha256 | test("^[0-9a-f]{64}$")) and .size > 0)
+          ' runtime-manifest.json
+          for profile in universal minecraft games apps vm; do
+            jq -e '
+              .meta.version == "PTDL_v2"
+              and .startup == "/usr/local/bin/pcvm run"
+              and .file_denylist == [".pcvm"]
+              and ((.variables[] | select(.env_variable == "SOFTWARE").rules | split(",") | length) > 1)
+              and ((.variables[] | select(.env_variable == "ALLOWED_SOFTWARE").default_value | split(",") | length) == (.variables[] | select(.env_variable == "SOFTWARE").rules | split(",") | length) - 1)
+              and ([.variables[].env_variable] | index("ACCEPT_MINECRAFT_EULA") | not)
+            ' "egg/egg-pcvm-${profile}.json"
+          done
       - name: Cross-compile launcher
         run: |
           for arch in amd64 arm64; do
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -o "pcvm-linux-$arch" ./cmd/pcvm
           done
 
-  image:
+  image-pr:
     needs: test
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        profile: [core, games, vm, full]
+        include:
+          - profile: minecraft
+            platforms: linux/amd64,linux/arm64
+          - profile: games
+            platforms: linux/amd64
+          - profile: apps
+            platforms: linux/amd64,linux/arm64
+          - profile: vm
+            platforms: linux/amd64,linux/arm64
+          - profile: full
+            platforms: linux/amd64,linux/arm64
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Build profile without registry credentials
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: ${{ matrix.platforms }}
+          push: false
+          build-args: |
+            VERSION=2.0.0
+            PROFILE=${{ matrix.profile }}
+          cache-from: type=gha,scope=profile-${{ matrix.profile }}
+          cache-to: type=gha,mode=max,scope=profile-${{ matrix.profile }}
+
+  image:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: minecraft
+            platforms: linux/amd64,linux/arm64
+          - profile: games
+            platforms: linux/amd64
+          - profile: apps
+            platforms: linux/amd64,linux/arm64
+          - profile: vm
+            platforms: linux/amd64,linux/arm64
+          - profile: full
+            platforms: linux/amd64,linux/arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - name: Derive image name
-        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm" >> "$GITHUB_ENV"
-      - uses: docker/login-action@v4
-        if: github.event_name != 'pull_request'
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pcvm" >> "$GITHUB_ENV"
+          echo "VERSION=$(jq -r .version internal/pcvm/catalog.json)" >> "$GITHUB_ENV"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.IMAGE }}
           tags: |
@@ -75,15 +152,15 @@ jobs:
             type=sha,suffix=-${{ matrix.profile }}
             type=ref,event=branch,enable=${{ matrix.profile == 'full' }}
             type=sha,enable=${{ matrix.profile == 'full' }}
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: ${{ matrix.platforms }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=1.8.0
+            VERSION=${{ env.VERSION }}
             PROFILE=${{ matrix.profile }}
           sbom: true
           provenance: mode=max
@@ -94,6 +171,9 @@ jobs:
     needs: image
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Measure compressed GHCR layers by profile and architecture
         env:
@@ -128,9 +208,7 @@ jobs:
               with urllib.request.urlopen(request, timeout=30) as response:
                   return json.load(response)
 
-          sizes = {}
-          for profile in ("core", "games", "vm", "full"):
-              reference = f"main-{profile}"
+          def platform_sizes(reference):
               for attempt in range(6):
                   try:
                       index = manifest(reference)
@@ -139,29 +217,49 @@ jobs:
                       if attempt == 5:
                           raise
                       time.sleep(5)
+              result = {}
               for descriptor in index.get("manifests", []):
                   platform = descriptor.get("platform", {})
                   architecture = platform.get("architecture")
                   if platform.get("os") != "linux" or architecture not in ("amd64", "arm64"):
                       continue
                   image = manifest(descriptor["digest"])
-                  sizes[(profile, architecture)] = sum(layer["size"] for layer in image.get("layers", []))
+                  result[architecture] = sum(layer["size"] for layer in image.get("layers", []))
+              return result
 
-          for architecture in ("amd64", "arm64"):
-              full = sizes[("full", architecture)]
-              for profile in ("core", "games", "vm"):
-                  candidate = sizes[(profile, architecture)]
-                  if candidate >= full:
-                      raise SystemExit(f"{profile}/{architecture} is not smaller than full")
+          profiles = ("minecraft", "games", "apps", "vm", "full")
+          sizes = {profile: platform_sizes(f"main-{profile}") for profile in profiles}
+          baselines = {
+              "minecraft": platform_sizes("1.8.0-core"),
+              "games": platform_sizes("1.8.0-games"),
+              "apps": platform_sizes("1.8.0"),
+              "vm": platform_sizes("1.8.0-vm"),
+              "full": platform_sizes("1.8.0"),
+          }
+          baseline_labels = {
+              "minecraft": "1.8.0-core", "games": "1.8.0-games", "apps": "1.8.0",
+              "vm": "1.8.0-vm", "full": "1.8.0",
+          }
+          for profile in profiles:
+              for architecture, candidate in sizes[profile].items():
+                  baseline = baselines[profile][architecture]
+                  ratio = candidate / baseline
+                  maximum = 1.05 if profile == "full" else 0.75
+                  if ratio > maximum:
+                      raise SystemExit(
+                          f"{profile}/{architecture} is {ratio:.1%} of its PCVM 1.8 baseline; maximum is {maximum:.0%}"
+                      )
 
           summary = os.environ["GITHUB_STEP_SUMMARY"]
           with open(summary, "a", encoding="utf-8") as output:
               output.write("### Compressed PCVM image layers\n\n")
-              output.write("| Profile | AMD64 | ARM64 |\n|---|---:|---:|\n")
-              for profile in ("core", "games", "vm", "full"):
-                  amd64 = sizes[(profile, "amd64")] / 1024 / 1024
-                  arm64 = sizes[(profile, "arm64")] / 1024 / 1024
-                  output.write(f"| {profile} | {amd64:.2f} MiB | {arm64:.2f} MiB |\n")
+              output.write("| Profile | AMD64 | ARM64 | 1.8 baseline |\n|---|---:|---:|---|\n")
+              for profile in profiles:
+                  amd64 = sizes[profile].get("amd64")
+                  arm64 = sizes[profile].get("arm64")
+                  amd64_text = f"{amd64 / 1024 / 1024:.2f} MiB" if amd64 else "n/a"
+                  arm64_text = f"{arm64 / 1024 / 1024:.2f} MiB" if arm64 else "n/a"
+                  output.write(f"| {profile} | {amd64_text} | {arm64_text} | {baseline_labels[profile]} |\n")
           PY
 
   web-integration:
@@ -172,36 +270,60 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - name: Build architecture image
-        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.8.0 --build-arg PROFILE=core -t "pcvm:web-${ARCH}" .
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=2.0.0 --build-arg PROFILE=apps -t "pcvm:web-${ARCH}" .
         env:
           ARCH: ${{ matrix.arch }}
-      - name: Verify embedded core profile and package boundary
+      - name: Verify embedded Apps profile and package boundary
         env:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          test "$(docker run --rm --platform "linux/${ARCH}" --entrypoint /usr/local/bin/pcvm "pcvm:web-${ARCH}" profile)" = core
-          docker run --rm --platform "linux/${ARCH}" --entrypoint /bin/sh "pcvm:web-${ARCH}" -ec \
-            'test ! -x /usr/bin/qemu-img; test ! -x /usr/bin/qemu-system-x86_64; test ! -x /usr/bin/qemu-system-aarch64; ! dpkg --print-foreign-architectures | grep -qx i386'
+          test "$(docker run --rm --platform "linux/${ARCH}" --entrypoint /usr/local/bin/pcvm "pcvm:web-${ARCH}" profile)" = apps
+          docker run --rm --platform "linux/${ARCH}" --read-only --security-opt no-new-privileges \
+            --cap-drop ALL --entrypoint /bin/sh "pcvm:web-${ARCH}" -ec \
+            'test -x /usr/sbin/nginx; test -x /usr/sbin/apache2; test -x /usr/bin/git; test -x /usr/bin/cc; test ! -x /usr/bin/qemu-img; test ! -x /usr/bin/qemu-system-x86_64; test ! -x /usr/bin/qemu-system-aarch64; test ! -x /usr/bin/xz; test ! -x /usr/bin/unzip; test ! -x /usr/bin/zstd; ! dpkg --print-foreign-architectures | grep -qx i386'
+      - name: Build Minecraft profile architecture image
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=2.0.0 --build-arg PROFILE=minecraft -t "pcvm:minecraft-${ARCH}" .
+      - name: Verify minimal Minecraft package boundary
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          test "$(docker run --rm --platform "linux/${ARCH}" --entrypoint /usr/local/bin/pcvm "pcvm:minecraft-${ARCH}" profile)" = minecraft
+          docker run --rm --platform "linux/${ARCH}" --read-only --security-opt no-new-privileges \
+            --cap-drop ALL --entrypoint /bin/sh "pcvm:minecraft-${ARCH}" -ec \
+            'test ! -x /usr/sbin/nginx; test ! -x /usr/sbin/apache2; test ! -x /usr/bin/git; test ! -x /usr/bin/cc; test ! -x /usr/bin/qemu-img; test ! -x /usr/bin/xz; test ! -x /usr/bin/unzip; test ! -x /usr/bin/zstd; ! dpkg --print-foreign-architectures | grep -qx i386'
       - name: Test static mode and private-upstream rejection
         env:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           docker network create pcvm-web
-          docker run -d --name pcvm-upstream --network pcvm-web nginx:alpine
+          docker volume create pcvm-web-data >/dev/null
+          docker run -d --name pcvm-upstream --network pcvm-web \
+            nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
           cleanup() {
             docker rm -f pcvm-under-test pcvm-upstream >/dev/null 2>&1 || true
+            docker volume rm -f pcvm-web-data >/dev/null 2>&1 || true
             docker network rm pcvm-web >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
           for provider in nginx apache caddy; do
             docker rm -f pcvm-under-test >/dev/null 2>&1 || true
+            docker volume rm -f pcvm-web-data >/dev/null 2>&1 || true
+            docker volume create pcvm-web-data >/dev/null
             docker run --platform "linux/${ARCH}" -d --name pcvm-under-test --network pcvm-web -p 0:8080 \
+              --read-only --security-opt no-new-privileges --cap-drop ALL \
+              --tmpfs /tmp:rw,nosuid,nodev,size=64m --tmpfs /run:rw,nosuid,nodev,size=16m \
+              -v pcvm-web-data:/home/container \
               -e "SOFTWARE=${provider}" -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 -e WEB_MODE=static \
               "pcvm:web-${ARCH}"
             ready=0
@@ -223,6 +345,9 @@ jobs:
 
             docker rm -f pcvm-under-test >/dev/null 2>&1 || true
             docker run --platform "linux/${ARCH}" -d --name pcvm-under-test --network pcvm-web \
+              --read-only --security-opt no-new-privileges --cap-drop ALL \
+              --tmpfs /tmp:rw,nosuid,nodev,size=64m --tmpfs /run:rw,nosuid,nodev,size=16m \
+              -v pcvm-web-data:/home/container \
               -e "SOFTWARE=${provider}" -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 -e WEB_MODE=proxy \
               -e UPSTREAM_URL=http://pcvm-upstream:80 "pcvm:web-${ARCH}"
             for _ in $(seq 1 60); do
@@ -239,12 +364,19 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          cleanup() { docker rm -f pcvm-memory-budget >/dev/null 2>&1 || true; }
+          cleanup() {
+            docker rm -f pcvm-memory-budget >/dev/null 2>&1 || true
+            docker volume rm -f pcvm-memory-budget >/dev/null 2>&1 || true
+          }
           trap cleanup EXIT
           for limit in 512 96; do
             cleanup
+            docker volume create pcvm-memory-budget >/dev/null
             docker run --platform "linux/${ARCH}" -d --name pcvm-memory-budget \
               --memory "${limit}m" --memory-swap "${limit}m" \
+              --read-only --security-opt no-new-privileges --cap-drop ALL \
+              --tmpfs /tmp:rw,nosuid,nodev,size=64m --tmpfs /run:rw,nosuid,nodev,size=16m \
+              -v pcvm-memory-budget:/home/container \
               -e SOFTWARE=nginx -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 \
               "pcvm:web-${ARCH}"
             ready=0
@@ -290,6 +422,8 @@ jobs:
           JS
           docker run -d --name pcvm-memory-oom --memory 384m --memory-swap 384m \
             --platform "linux/${ARCH}" \
+            --read-only --security-opt no-new-privileges --cap-drop ALL \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m --tmpfs /run:rw,nosuid,nodev,size=16m \
             -v "$work:/home/container" \
             -e SOFTWARE=node-bot -e SOURCE_MODE=upload -e ENTRY_FILE=index.js \
             -e SERVER_PORT=8080 -e CLEAR_CONSOLE=0 "pcvm:web-${ARCH}"
@@ -307,7 +441,7 @@ jobs:
       - name: Build VM profile architecture image
         env:
           ARCH: ${{ matrix.arch }}
-        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=1.8.0 --build-arg PROFILE=vm -t "pcvm:vm-${ARCH}" .
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=2.0.0 --build-arg PROFILE=vm -t "pcvm:vm-${ARCH}" .
       - name: Verify non-root VM profile, QEMU and firmware under Wings-like restrictions
         env:
           ARCH: ${{ matrix.arch }}
@@ -324,15 +458,16 @@ jobs:
           docker run --rm --platform "linux/${ARCH}" --read-only --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,nodev,size=64m \
             --cap-drop ALL --entrypoint /bin/sh "pcvm:vm-${ARCH}" -ec \
-            "test \"\$(id -u)\" = 1000; ! dpkg --print-foreign-architectures | grep -qx i386; test -x '$qemu'; test -x /usr/bin/qemu-img; test -r '$firmware'; test ! -e /dev/kvm; '$qemu' --version; qemu-img --version; truncate -s 32M /tmp/source.raw; qemu-img convert -f raw -O qcow2 /tmp/source.raw /tmp/source.qcow2; qemu-img convert -f qcow2 -O qcow2 -c -o compat=1.1,compression_type=zstd /tmp/source.qcow2 /tmp/zstd.qcow2; qemu-img check -q /tmp/zstd.qcow2; qemu-img info --output=json /tmp/zstd.qcow2 | grep -Eq '\"compression-type\"[[:space:]]*:[[:space:]]*\"zstd\"'"
+            "test \"\$(id -u)\" = 1000; test ! -x /usr/sbin/nginx; test ! -x /usr/sbin/apache2; test ! -x /usr/bin/git; test ! -x /usr/bin/cc; test ! -x /usr/bin/xz; test ! -x /usr/bin/unzip; test ! -x /usr/bin/zstd; ! dpkg --print-foreign-architectures | grep -qx i386; test -x '$qemu'; test -x /usr/bin/qemu-img; test -r '$firmware'; test ! -e /dev/kvm; '$qemu' --version; qemu-img --version; truncate -s 32M /tmp/source.raw; qemu-img convert -f raw -O qcow2 /tmp/source.raw /tmp/source.qcow2; qemu-img convert -f qcow2 -O qcow2 -c -o compat=1.1,compression_type=zstd /tmp/source.qcow2 /tmp/zstd.qcow2; qemu-img check -q /tmp/zstd.qcow2; qemu-img info --output=json /tmp/zstd.qcow2 | grep -Eq '\"compression-type\"[[:space:]]*:[[:space:]]*\"zstd\"'"
       - name: Verify AMD64 games profile boundary
         if: matrix.arch == 'amd64'
         run: |
           set -euo pipefail
-          docker buildx build --platform linux/amd64 --load --build-arg VERSION=1.8.0 --build-arg PROFILE=games -t pcvm:games-amd64 .
+          docker buildx build --platform linux/amd64 --load --build-arg VERSION=2.0.0 --build-arg PROFILE=games -t pcvm:games-amd64 .
           test "$(docker run --rm --entrypoint /usr/local/bin/pcvm pcvm:games-amd64 profile)" = games
-          docker run --rm --entrypoint /bin/sh pcvm:games-amd64 -ec \
-            'test ! -x /usr/bin/qemu-img; dpkg --print-foreign-architectures | grep -qx i386; test -e /lib/ld-linux.so.2 -o -e /lib/i386-linux-gnu/ld-linux.so.2'
+          docker run --rm --read-only --security-opt no-new-privileges --cap-drop ALL \
+            --entrypoint /bin/sh pcvm:games-amd64 -ec \
+            'test ! -x /usr/sbin/nginx; test ! -x /usr/sbin/apache2; test ! -x /usr/bin/git; test ! -x /usr/bin/cc; test ! -x /usr/bin/qemu-img; test -x /usr/bin/xz; test ! -x /usr/bin/unzip; test ! -x /usr/bin/zstd; dpkg --print-foreign-architectures | grep -qx i386; test -e /lib/ld-linux.so.2 -o -e /lib/i386-linux-gnu/ld-linux.so.2'
       - name: Report profile virtual sizes
         env:
           ARCH: ${{ matrix.arch }}
@@ -341,8 +476,12 @@ jobs:
             echo "### PCVM ${ARCH} profile virtual sizes"
             echo '| Profile | Bytes | MiB |'
             echo '|---|---:|---:|'
-            for profile in core vm; do
-              if [ "$profile" = core ]; then tag="pcvm:web-${ARCH}"; else tag="pcvm:vm-${ARCH}"; fi
+            for profile in minecraft apps vm; do
+              case "$profile" in
+                minecraft) tag="pcvm:minecraft-${ARCH}" ;;
+                apps) tag="pcvm:web-${ARCH}" ;;
+                vm) tag="pcvm:vm-${ARCH}" ;;
+              esac
               bytes=$(docker image inspect --format '{{.Size}}' "$tag")
               mib=$(awk -v size="$bytes" 'BEGIN { printf "%.2f", size/1024/1024 }')
               echo "| ${profile} | ${bytes} | ${mib} |"

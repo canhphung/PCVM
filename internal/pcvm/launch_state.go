@@ -35,20 +35,15 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 		}
 	}
 
-	launch := LaunchState{Provider: spec.ID, ResolvedVersion: state.ResolvedVersion, ResolvedBuild: state.ResolvedBuild, RuntimeVersion: state.RuntimeVersion}
-	launch.ReadyPatterns = append([]string(nil), spec.ReadyPatterns...)
-	if len(spec.Readiness.Patterns) > 0 {
-		launch.ReadyPatterns = append([]string(nil), spec.Readiness.Patterns...)
+	launch := LaunchState{Provider: spec.ID, ResolvedVersion: state.ResolvedVersion, ResolvedBuild: state.ResolvedBuild, RuntimeVersion: state.RuntimeVersion,
+		Readiness: spec.Readiness, Control: spec.Control}
+	launch.Readiness.Patterns = append([]string(nil), spec.Readiness.Patterns...)
+	if a.Config.Request.AppReady != "" && (spec.Installer == "node-app" || spec.Installer == "python-app" || spec.Installer == "generic-app") {
+		launch.Readiness.Mode = "regex"
+		launch.Readiness.Patterns = []string{a.Config.Request.AppReady}
 	}
-	if a.Config.Request.AppReady != "" && (spec.Installer == "node-app" || spec.Installer == "python-app") {
-		launch.ReadyPatterns = []string{a.Config.Request.AppReady}
-	}
-	if _, err := compileReadyPatterns(launch.ReadyPatterns); err != nil {
+	if _, err := compileReadyPatterns(launch.Readiness.Patterns); err != nil {
 		return empty, fmt.Errorf("catalog or APP_READY_PATTERN: %w", err)
-	}
-	launch.StopCommand = spec.StopCommand
-	if spec.Control.StopCommand != "" {
-		launch.StopCommand = spec.Control.StopCommand
 	}
 
 	managed := filepath.Join(a.Config.Control, "managed", spec.ID)
@@ -76,6 +71,18 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 			argsFile = filepath.Join("@libraries", "net", "neoforged", "neoforge", version, "unix_args.txt")
 		}
 		launch.Command = []string{runtimePath, "@user_jvm_args.txt", argsFile, "nogui"}
+	case "quilt":
+		launch.WorkingDirectory = filepath.Join(managed, version+"-"+build)
+		launch.Command = []string{runtimePath, "-jar", filepath.Join(launch.WorkingDirectory, "quilt-server-launch.jar"), "nogui"}
+	case "paper-geyser":
+		launch.WorkingDirectory = a.Config.Home
+		launch.Command = []string{runtimePath, "-jar", filepath.Join(managed, version+"-"+build+"-server.jar"), "nogui"}
+	case "modrinth":
+		command, workDir, err := rebuildModrinthCommand(a.Config, runtimePath)
+		if err != nil {
+			return empty, err
+		}
+		launch.Command, launch.WorkingDirectory = command, workDir
 	case "node-app", "python-app":
 		command, workDir, err := a.rebuildAppCommand(spec, state, runtimePath)
 		if err != nil {
@@ -84,27 +91,37 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 		launch.Command, launch.WorkingDirectory = command, workDir
 		if spec.ID == "python-bot" {
 			launch.Environment = []string{"PYTHONUNBUFFERED=1", "PYTHONDONTWRITEBYTECODE=1"}
+			if a.Config.Request.SourceMode == "git" {
+				launch.Environment = append(launch.Environment, "PYTHONPATH="+filepath.Join(workDir, ".pcvm-site-packages"))
+			}
 		}
+	case "generic-app":
+		command, workDir, err := rebuildGenericAppCommand(a.Config, spec, state, runtimePath)
+		if err != nil {
+			return empty, err
+		}
+		launch.Command, launch.WorkingDirectory = command, workDir
 	case "web":
 		launch.WorkingDirectory = a.Config.Home
 		if spec.ID == "caddy" {
 			launch.Command = []string{runtimePath}
 		}
-	case "steamcmd", "terraria", "factorio":
+	case "steamcmd":
 		launch.WorkingDirectory = filepath.Join(a.Config.Home, "game")
-		launch.Command = []string{filepath.Join(launch.WorkingDirectory, filepath.FromSlash(spec.Options["executable"]))}
+		launch.Command = []string{filepath.Join(launch.WorkingDirectory, filepath.FromSlash(spec.Options.Executable))}
+	case "terraria", "factorio":
+		launch.WorkingDirectory = filepath.Join(managed, version)
+		launch.Command = []string{filepath.Join(launch.WorkingDirectory, filepath.FromSlash(spec.Options.Executable))}
 	case "tmodloader":
-		launch.WorkingDirectory = filepath.Join(a.Config.Home, "game")
-		dll, err := findFile(launch.WorkingDirectory, spec.Options["executable"])
-		if err != nil {
-			return empty, err
-		}
-		launch.Command = []string{runtimePath, dll}
+		launch.WorkingDirectory = filepath.Join(managed, version)
+		launch.Command = []string{runtimePath, filepath.Join(launch.WorkingDirectory, filepath.FromSlash(spec.Options.Executable))}
+	case "tshock":
+		launch.WorkingDirectory = filepath.Join(managed, version)
+		launch.Command = []string{runtimePath, filepath.Join(launch.WorkingDirectory, filepath.FromSlash(spec.Options.Executable))}
 	case "endstone":
-		venv := filepath.Join(managed, "venv-"+version+"-py"+state.RuntimeVersion)
-		launch.WorkingDirectory = a.Config.Home
-		launch.Command = []string{filepath.Join(venv, "bin", "python3"), "-m", "endstone", "--server-folder", a.Config.Home, "--yes", "--remote", "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/v2"}
-		launch.Environment = []string{"PYTHONUNBUFFERED=1", "PYTHONDONTWRITEBYTECODE=1"}
+		launch.WorkingDirectory = filepath.Join(managed, version)
+		launch.Command = []string{runtimePath, "-m", "endstone", "--server-folder", a.Config.Home, "--yes", "--remote", "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/v2"}
+		launch.Environment = []string{"PYTHONUNBUFFERED=1", "PYTHONDONTWRITEBYTECODE=1", "PYTHONPATH=" + filepath.Join(launch.WorkingDirectory, "site-packages")}
 	case "openmp":
 		launch.WorkingDirectory = filepath.Join(managed, version)
 		launch.Command = []string{filepath.Join(launch.WorkingDirectory, "omp-server")}
@@ -119,9 +136,9 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 		if !ok {
 			return empty, fmt.Errorf("VM state does not reference an image pinned by the embedded catalog")
 		}
-		compression, err := validateVMCompression(stateVMCompression(state))
+		compression, err := validateVMCompression(a.Config.Request.VMDiskCompression)
 		if err != nil {
-			return empty, fmt.Errorf("state VM disk compression is invalid: %w", err)
+			return empty, fmt.Errorf("VM disk compression is invalid: %w", err)
 		}
 		launch.WorkingDirectory = a.Config.Home
 		launch.VMImageID = image.ID
@@ -130,6 +147,11 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 		launch.VMDiskCompression = compression
 	default:
 		return empty, fmt.Errorf("unsupported installer %q", spec.Installer)
+	}
+	if state.Schema == StateSchema {
+		if err := rewriteStagedLaunchToRelease(a.Config.Control, spec, state, &launch); err != nil {
+			return empty, err
+		}
 	}
 	if spec.Installer != "web" && spec.Installer != "qemu-vm" && len(launch.Command) == 0 {
 		return empty, fmt.Errorf("catalog produced no command")
@@ -140,7 +162,7 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 func (a *App) rebuildAppCommand(spec ProviderSpec, state State, runtimePath string) ([]string, string, error) {
 	source := a.Config.Home
 	if a.Config.Request.SourceMode == "git" {
-		source = filepath.Join(a.Config.Home, "app")
+		source = releasePayloadRoot(a.Config.Control, spec.ID, releaseIDFor(spec.ID, state.ArtifactLock))
 	}
 	entry := a.Config.Request.EntryFile
 	if entry == "" {
@@ -167,7 +189,12 @@ func (a *App) rebuildAppCommand(spec ProviderSpec, state State, runtimePath stri
 		return nil, "", err
 	}
 	if spec.ID == "python-bot" {
-		runtimePath = filepath.Join(a.Config.Control, "managed", spec.ID, "venv-"+state.RuntimeVersion, "bin", "python3")
+		if a.Config.Request.SourceMode == "git" {
+			// Git dependencies are installed with pip --target so the immutable
+			// release remains relocatable across atomic activation.
+		} else {
+			runtimePath = filepath.Join(a.Config.Control, "managed", spec.ID, "venv-"+state.RuntimeVersion, "bin", "python3")
+		}
 	}
 	return append([]string{runtimePath, entry}, args...), source, nil
 }

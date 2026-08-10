@@ -29,7 +29,7 @@ func TestPaperResolverContractFixture(t *testing.T) {
 	}
 	h := NewHTTPClient()
 	h.Client = &http.Client{Transport: fixtures}
-	spec := ProviderSpec{ID: "paper", Name: "Paper", Family: "bukkit", Architectures: []string{"amd64"}, Runtime: "java", Resolver: "papermc", Installer: "jar", Options: map[string]string{"project": "paper"}}
+	spec := ProviderSpec{ID: "paper", Name: "Paper", Family: "bukkit", Architectures: []string{"amd64"}, Runtime: "java", RuntimePolicy: RuntimePolicySpec{Default: "auto", Allowed: []string{"8", "11", "17", "21", "25"}}, Resolver: "papermc", Installer: "jar", Options: DriverOptions{Project: "paper"}}
 	r, err := NewProvider(spec).Resolve(context.Background(), Request{Version: "latest", Build: "latest", RuntimeVersion: "auto"}, h)
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestMojangResolverContractFixture(t *testing.T) {
 	}
 	h := NewHTTPClient()
 	h.Client = &http.Client{Transport: fixtures}
-	spec := ProviderSpec{ID: "vanilla", Name: "Vanilla", Family: "vanilla", Architectures: []string{"amd64"}, Runtime: "java", Resolver: "mojang", Installer: "jar"}
+	spec := ProviderSpec{ID: "vanilla", Name: "Vanilla", Family: "vanilla", Architectures: []string{"amd64"}, Runtime: "java", RuntimePolicy: RuntimePolicySpec{Default: "auto", Allowed: []string{"8", "11", "17", "21", "25"}}, Resolver: "mojang", Installer: "jar"}
 	r, err := NewProvider(spec).Resolve(context.Background(), Request{Version: "latest", RuntimeVersion: "auto"}, h)
 	if err != nil {
 		t.Fatal(err)
@@ -288,22 +288,30 @@ func TestUploadBotInstallGeneratesDefaultEntry(t *testing.T) {
 	}
 }
 
-func TestEndstoneInstallUsesStagedVirtualenvAndManagedPort(t *testing.T) {
+func TestEndstoneInstallUsesStagedPackageTreeAndManagedPort(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("POSIX virtualenv shim")
+		t.Skip("POSIX pip shim")
 	}
 	home := t.TempDir()
 	control := filepath.Join(home, ".pcvm")
 	runtimePath := filepath.Join(home, "python-shim")
 	shim := `#!/bin/sh
 set -eu
-if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
-  mkdir -p "$3/bin"
-  cp "$0" "$3/bin/python3"
-  chmod 0750 "$3/bin/python3"
-  exit 0
-fi
 if [ "${1:-}" = "-m" ] && [ "${2:-}" = "pip" ]; then
+  shift 2
+  target=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--target" ]; then
+      [ "$#" -ge 2 ]
+      target="$2"
+      shift 2
+      continue
+    fi
+    shift
+  done
+  [ -n "$target" ]
+  mkdir -p "$target/endstone"
+  printf '%s\n' 'fixture package' >"$target/endstone/__init__.py"
   exit 0
 fi
 exit 9
@@ -317,7 +325,7 @@ exit 9
 	}
 	installed, err := NewProvider(catalogSpec(t, "endstone")).Install(context.Background(), InstallContext{
 		Home: home, ControlDir: control, AllocationPort: 19145, Artifact: wheel, Runtime: runtimePath,
-		Request: Request{AcceptEULA: true, ServerName: "PCVM\nBedrock", MaxPlayers: 20}, Out: io.Discard, Err: io.Discard,
+		Request: Request{ServerName: "PCVM\nBedrock", MaxPlayers: 20}, Out: io.Discard, Err: io.Discard,
 	}, Resolved{Artifact: Artifact{Version: "0.11.8"}, RuntimeVersion: "3.13"})
 	if err != nil {
 		t.Fatal(err)
@@ -325,8 +333,20 @@ exit 9
 	if len(installed.Command) < 6 || installed.Command[1] != "-m" || installed.Command[2] != "endstone" || installed.Command[4] != home {
 		t.Fatalf("command=%v", installed.Command)
 	}
-	if _, err := os.Stat(installed.Command[0]); err != nil {
-		t.Fatalf("activated virtualenv is missing: %v", err)
+	if installed.Command[0] != runtimePath {
+		t.Fatalf("command uses untrusted Python runtime: %v", installed.Command)
+	}
+	wantReleaseRoot := filepath.Join(control, "releases", "endstone")
+	if installed.WorkDir == "" || !pathWithin(wantReleaseRoot, installed.WorkDir) || filepath.Base(installed.WorkDir) != "payload" {
+		t.Fatalf("Endstone package tree was not activated in the release store: %q", installed.WorkDir)
+	}
+	wantPythonPath := "PYTHONPATH=" + filepath.Join(installed.WorkDir, "site-packages")
+	if !contains(installed.Environment, wantPythonPath) {
+		t.Fatalf("environment=%v, want %q", installed.Environment, wantPythonPath)
+	}
+	packageInit := filepath.Join(installed.WorkDir, "site-packages", "endstone", "__init__.py")
+	if info, err := os.Lstat(packageInit); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		t.Fatalf("activated Endstone package is not a regular file: info=%v err=%v", info, err)
 	}
 	properties, err := os.ReadFile(filepath.Join(home, "server.properties"))
 	if err != nil {
@@ -336,5 +356,42 @@ exit 9
 		if !strings.Contains(string(properties), want) {
 			t.Fatalf("server.properties missing %q:\n%s", want, properties)
 		}
+	}
+}
+
+func TestEndstoneInstallRejectsEmptyPipTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX pip shim")
+	}
+	home := t.TempDir()
+	control := filepath.Join(home, ".pcvm")
+	runtimePath := filepath.Join(home, "python-shim")
+	shim := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "pip" ]; then
+  exit 0
+fi
+exit 9
+`
+	if err := os.WriteFile(runtimePath, []byte(shim), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	wheel := filepath.Join(home, "endstone.whl")
+	if err := os.WriteFile(wheel, []byte("fixture"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewProvider(catalogSpec(t, "endstone")).Install(context.Background(), InstallContext{
+		Home: home, ControlDir: control, AllocationPort: 19145, Artifact: wheel, Runtime: runtimePath,
+		Request: Request{ServerName: "PCVM", MaxPlayers: 20}, Out: io.Discard, Err: io.Discard,
+	}, Resolved{Artifact: Artifact{Version: "0.11.8"}, RuntimeVersion: "3.13"})
+	if err == nil || !strings.Contains(err.Error(), "did not install a regular package tree") {
+		t.Fatalf("empty pip target was not rejected: %v", err)
+	}
+	candidates, globErr := filepath.Glob(filepath.Join(control, "managed", "endstone", ".candidate-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("failed Endstone candidate was not cleaned up: %v", candidates)
 	}
 }

@@ -11,8 +11,8 @@ func TestCleanupConsumedInstallCache(t *testing.T) {
 	for _, file := range []string{
 		filepath.Join(control, "cache", "artifacts", "server.zip"),
 		filepath.Join(control, "cache", "sources", "node-deadbeef", "index.js"),
-		filepath.Join(control, "cache", "downloads", "java.tar.gz"),
-		filepath.Join(control, "cache", "runtimes", "java-21-amd64", "bin", "java"),
+		filepath.Join(control, "cache", "runtime-receipts", "tree.json"),
+		filepath.Join(control, "cache", "trees", "sha256", "tree", "bin", "java"),
 	} {
 		mustWrite(t, file)
 	}
@@ -26,8 +26,8 @@ func TestCleanupConsumedInstallCache(t *testing.T) {
 		}
 	}
 	for _, retained := range []string{
-		filepath.Join(control, "cache", "downloads", "java.tar.gz"),
-		filepath.Join(control, "cache", "runtimes", "java-21-amd64", "bin", "java"),
+		filepath.Join(control, "cache", "runtime-receipts", "tree.json"),
+		filepath.Join(control, "cache", "trees", "sha256", "tree", "bin", "java"),
 	} {
 		if _, err := os.Stat(retained); err != nil {
 			t.Fatalf("required runtime cache removed: %v", err)

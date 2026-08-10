@@ -25,12 +25,23 @@ func (a *App) syncPrimaryAllocation(state LaunchState) (bool, error) {
 	var changed bool
 	var err error
 	switch state.Provider {
-	case "vanilla", "paper", "purpur", "pufferfish", "fabric", "forge", "neoforge":
+	case "vanilla", "paper", "purpur", "pufferfish", "folia", "canvas", "fabric", "quilt", "forge", "neoforge", "modrinth-modpack":
 		changed, err = patchProperties(a.Config.Home, "server.properties", []configSetting{
 			{Key: "server-ip", Value: "0.0.0.0"},
 			{Key: "server-port", Value: value},
 			{Key: "query.port", Value: value},
 		})
+	case "paper-geyser":
+		changed, err = patchProperties(a.Config.Home, "server.properties", []configSetting{
+			{Key: "server-ip", Value: "0.0.0.0"},
+			{Key: "server-port", Value: value},
+			{Key: "query.port", Value: value},
+		})
+		if err == nil {
+			var geyserChanged bool
+			geyserChanged, err = patchGeyserAllocation(a.Config.Home, port)
+			changed = changed || geyserChanged
+		}
 	case "velocity":
 		if err = ensureVelocityConfig(a.Config.Home, state.Command); err == nil {
 			changed, err = patchRootTOMLScalar(a.Config.Home, "velocity.toml", "bind", strconv.Quote("0.0.0.0:"+value))
@@ -56,6 +67,181 @@ func (a *App) syncPrimaryAllocation(state LaunchState) (bool, error) {
 		return false, fmt.Errorf("configure primary allocation for %s: %w", state.Provider, err)
 	}
 	return changed, nil
+}
+
+const geyserConfigRelative = "plugins/Geyser-Spigot/config.yml"
+
+// patchGeyserAllocation owns only the network scalars PCVM must reconcile.
+// Unknown keys, comments, and complete unrelated YAML sections are retained.
+// Rooted filesystem operations reject symlink components and atomically replace
+// the config, matching the archive/overlay safety boundary.
+func patchGeyserAllocation(home string, port int) (bool, error) {
+	data, mode, err := readNestedManagedConfig(home, geyserConfigRelative)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	updated, err := patchGeyserYAML(data, port)
+	if err != nil {
+		return false, err
+	}
+	if bytes.Equal(data, updated) {
+		return false, nil
+	}
+	if mode == 0 {
+		mode = 0o640
+	}
+	if err := writeNestedManagedConfig(home, geyserConfigRelative, updated, mode); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func patchGeyserYAML(data []byte, port int) ([]byte, error) {
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("Geyser port must be between 1 and 65535")
+	}
+	lines := splitConfigLines(data)
+	var err error
+	for _, section := range []struct {
+		name     string
+		settings []configSetting
+	}{
+		{name: "bedrock", settings: []configSetting{{Key: "address", Value: "0.0.0.0"}, {Key: "port", Value: strconv.Itoa(port)}, {Key: "clone-remote-port", Value: "false"}}},
+		{name: "remote", settings: []configSetting{{Key: "address", Value: "127.0.0.1"}, {Key: "port", Value: strconv.Itoa(port)}, {Key: "auth-type", Value: "floodgate"}}},
+	} {
+		lines, err = patchYAMLMappingSection(lines, section.name, section.settings)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return joinConfigLines(lines), nil
+}
+
+func patchYAMLMappingSection(lines []string, section string, settings []configSetting) ([]string, error) {
+	start := -1
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if len(line) == len(strings.TrimLeft(line, " \t")) && strings.HasPrefix(trimmed, section+":") {
+			if trimmed != section+":" {
+				return nil, fmt.Errorf("Geyser %s configuration must use block YAML", section)
+			}
+			if start >= 0 {
+				return nil, fmt.Errorf("Geyser configuration contains duplicate %s sections", section)
+			}
+			start = index
+		}
+	}
+	if start < 0 {
+		if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
+			lines = append(lines, "")
+		}
+		lines = append(lines, section+":")
+		for _, setting := range settings {
+			lines = append(lines, "  "+setting.Key+": "+setting.Value)
+		}
+		return lines, nil
+	}
+
+	end := len(lines)
+	directIndent := 0
+	for index := start + 1; index < len(lines); index++ {
+		trimmed := strings.TrimSpace(lines[index])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(lines[index], "\t") {
+			return nil, fmt.Errorf("Geyser %s configuration may not use tab indentation", section)
+		}
+		indent := len(lines[index]) - len(strings.TrimLeft(lines[index], " "))
+		if indent == 0 {
+			end = index
+			break
+		}
+		if directIndent == 0 || indent < directIndent {
+			directIndent = indent
+		}
+	}
+	if directIndent == 0 {
+		directIndent = 2
+	}
+
+	found := make(map[string]bool, len(settings))
+	for index := start + 1; index < end; index++ {
+		line := lines[index]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent != directIndent {
+			continue
+		}
+		key := yamlKey(trimmed)
+		for _, setting := range settings {
+			if key != setting.Key {
+				continue
+			}
+			if found[key] {
+				return nil, fmt.Errorf("Geyser %s configuration contains duplicate %s keys", section, key)
+			}
+			lines[index] = strings.Repeat(" ", directIndent) + setting.Key + ": " + setting.Value
+			found[key] = true
+			break
+		}
+	}
+	missing := make([]string, 0, len(settings))
+	for _, setting := range settings {
+		if !found[setting.Key] {
+			missing = append(missing, strings.Repeat(" ", directIndent)+setting.Key+": "+setting.Value)
+		}
+	}
+	if len(missing) > 0 {
+		lines = append(lines, make([]string, len(missing))...)
+		copy(lines[end+len(missing):], lines[end:])
+		copy(lines[end:], missing)
+	}
+	return lines, nil
+}
+
+func readNestedManagedConfig(home, relative string) ([]byte, os.FileMode, error) {
+	root, err := openArchiveRoot(home)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer root.Close()
+	native := filepath.FromSlash(relative)
+	info, err := root.Lstat(native)
+	if err != nil {
+		return nil, 0, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("managed config %s must be a regular non-symlink file", relative)
+	}
+	file, err := root.Open(native)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (2<<20)+1))
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(data) > 2<<20 {
+		return nil, 0, fmt.Errorf("managed config %s exceeds 2 MiB", relative)
+	}
+	return data, info.Mode().Perm(), nil
+}
+
+func writeNestedManagedConfig(home, relative string, data []byte, mode os.FileMode) error {
+	root, err := openArchiveRoot(home)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return writeArchiveRegularAt(root, filepath.FromSlash(relative), bytes.NewReader(data), mode, int64(len(data)))
 }
 
 func allocationEnvironment(provider string, current []string, port int) []string {

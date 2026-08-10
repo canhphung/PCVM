@@ -1,0 +1,39 @@
+name: Full Minecraft flagship smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flagship-providers:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build native Minecraft profile
+        run: |
+          docker build \
+            --build-arg "VERSION=$(jq -r .version internal/pcvm/catalog.json)" \
+            --build-arg PROFILE=minecraft \
+            -t pcvm:full-minecraft-smoke .
+      - name: Fresh-install every 2.0 Minecraft flagship provider
+        env:
+          ARCH: ${{ matrix.architecture }}
+          PCVM_SMOKE_ALLOW_TAG: '1'
+        run: |
+          set -euo pipefail
+          for provider in folia canvas quilt paper-geyser modrinth-modpack; do
+            bash scripts/candidate-smoke.sh minecraft "$provider" pcvm:full-minecraft-smoke "$ARCH"
+          done

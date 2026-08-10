@@ -2,6 +2,8 @@
 /dist/
 /.cache/
 /.pcvm/
+/.tmp-tests/
 *.exe
 *.test
-
+coverage
+coverage.*

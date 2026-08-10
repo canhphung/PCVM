@@ -6,20 +6,22 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestMirrorURL(t *testing.T) {
-	got := mirrorURL("https://mirror.example/runtimes/", "https://github.com/acme/release/node.tar.gz")
-	if got != "https://mirror.example/runtimes/node.tar.gz" {
+	digest := strings.Repeat("a", 64)
+	got := mirrorURL("https://mirror.example/runtimes/", digest)
+	if got != "https://mirror.example/runtimes/sha256/"+digest {
 		t.Fatal(got)
 	}
 }
 
 func TestCachePruningKeepsCurrentAndOnePrevious(t *testing.T) {
 	home := t.TempDir()
-	root := filepath.Join(home, ".pcvm", "cache", "runtimes")
+	root := filepath.Join(home, ".pcvm", "cache", "trees", "sha256")
 	names := []string{"old", "previous", "current"}
 	for i, name := range names {
 		path := filepath.Join(root, name)
@@ -46,14 +48,10 @@ func TestCachePruningKeepsCurrentAndOnePrevious(t *testing.T) {
 func TestCachePruningPairsRuntimeArchivesAndUsesGlobalLimit(t *testing.T) {
 	home := t.TempDir()
 	control := filepath.Join(home, ".pcvm")
-	root := filepath.Join(control, "cache", "runtimes")
-	packs := []RuntimePackSpec{
-		{Kind: "java", Version: "17", Architecture: "amd64", URL: "https://example.com/java17.tar.gz"},
-		{Kind: "java", Version: "21", Architecture: "amd64", URL: "https://example.com/java21.tar.gz"},
-		{Kind: "node", Version: "24", Architecture: "amd64", URL: "https://example.com/node24.tar.gz"},
-	}
-	for i, pack := range packs {
-		runtimeRoot := filepath.Join(root, pack.Kind+"-"+pack.Version+"-"+pack.Architecture)
+	root := filepath.Join(control, "cache", "trees", "sha256")
+	trees := []string{strings.Repeat("1", 64), strings.Repeat("2", 64), strings.Repeat("3", 64)}
+	for i, tree := range trees {
+		runtimeRoot := filepath.Join(root, tree)
 		if err := os.MkdirAll(runtimeRoot, 0o750); err != nil {
 			t.Fatal(err)
 		}
@@ -64,42 +62,49 @@ func TestCachePruningPairsRuntimeArchivesAndUsesGlobalLimit(t *testing.T) {
 		if err := os.Chtimes(runtimeRoot, when, when); err != nil {
 			t.Fatal(err)
 		}
-		archive := filepath.Join(control, "cache", "downloads", filepath.Base(pack.URL))
-		if err := os.MkdirAll(filepath.Dir(archive), 0o750); err != nil {
+		receipt := filepath.Join(control, "cache", "runtime-receipts", tree+".json")
+		if err := os.MkdirAll(filepath.Dir(receipt), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(archive, bytes.Repeat([]byte("y"), 8), 0o600); err != nil {
+		if err := os.WriteFile(receipt, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	m := RuntimeManager{Catalog: Catalog{RuntimePacks: packs}, Config: Config{
+	blob := filepath.Join(control, "cache", "blobs", "sha256", strings.Repeat("a", 64))
+	if err := os.MkdirAll(filepath.Dir(blob), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blob, bytes.Repeat([]byte("y"), 8), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := RuntimeManager{Config: Config{
 		Control: control, Arch: "amd64", Policy: Policy{CacheLimitBytes: 100},
 	}}
-	current := filepath.Join(root, "node-24-amd64")
+	current := filepath.Join(root, trees[2])
 	if err := m.Prune(current); err != nil {
 		t.Fatal(err)
 	}
 	for _, retained := range []string{
-		current, filepath.Join(control, "cache", "downloads", "node24.tar.gz"),
-		filepath.Join(root, "java-21-amd64"), filepath.Join(control, "cache", "downloads", "java21.tar.gz"),
+		current, filepath.Join(control, "cache", "runtime-receipts", trees[2]+".json"),
+		filepath.Join(root, trees[1]), filepath.Join(control, "cache", "runtime-receipts", trees[1]+".json"),
 	} {
 		if _, err := os.Stat(retained); err != nil {
-			t.Fatalf("active/previous runtime pair removed: %s: %v", retained, err)
+			t.Fatalf("active/previous runtime tree or receipt removed: %s: %v", retained, err)
 		}
 	}
 	for _, removed := range []string{
-		filepath.Join(root, "java-17-amd64"), filepath.Join(control, "cache", "downloads", "java17.tar.gz"),
+		filepath.Join(root, trees[0]), filepath.Join(control, "cache", "runtime-receipts", trees[0]+".json"), blob,
 	} {
 		if _, err := os.Stat(removed); !os.IsNotExist(err) {
 			t.Fatalf("expired cache retained: %s: %v", removed, err)
 		}
 	}
-	m.Config.Policy.CacheLimitBytes = 20
+	m.Config.Policy.CacheLimitBytes = 10
 	if err := m.Prune(current); err != nil {
 		t.Fatal(err)
 	}
 	for _, removed := range []string{
-		filepath.Join(root, "java-21-amd64"), filepath.Join(control, "cache", "downloads", "java21.tar.gz"),
+		filepath.Join(root, trees[1]), filepath.Join(control, "cache", "runtime-receipts", trees[1]+".json"),
 	} {
 		if _, err := os.Stat(removed); !os.IsNotExist(err) {
 			t.Fatalf("previous runtime exceeded global quota but was retained: %s: %v", removed, err)

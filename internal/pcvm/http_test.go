@@ -1,6 +1,7 @@
 package pcvm
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -12,6 +13,30 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestDownloadProgressRedactsLogLabelsAndReportsCompletion(t *testing.T) {
+	var output bytes.Buffer
+	client := NewHTTPClient()
+	client.Log = NewLogger(&output)
+	client.AllowHTTP = true
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Length", "7")
+		_, _ = response.Write([]byte("payload"))
+	}))
+	defer server.Close()
+	host := strings.Split(strings.TrimPrefix(server.URL, "http://"), ":")[0]
+	client.AllowedHosts[host] = true
+	destination := filepath.Join(t.TempDir(), "artifact")
+	artifact := Artifact{URL: server.URL, FileName: "unsafe\nname.jar"}
+	if _, err := client.Download(context.Background(), artifact, destination); err != nil {
+		t.Fatal(err)
+	}
+	logOutput := output.String()
+	if strings.Contains(logOutput, "unsafe\nname") || !strings.Contains(logOutput, "artifact=unsafe_name.jar") ||
+		!strings.Contains(logOutput, "phase=complete") || !strings.Contains(logOutput, "checksum=verified") {
+		t.Fatalf("unexpected progress log %q", logOutput)
+	}
+}
 
 func TestDownloadChecksumAndAtomicFile(t *testing.T) {
 	body := "verified payload"

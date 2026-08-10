@@ -48,59 +48,6 @@ func TestResolveVMImageLatestAndArchitecture(t *testing.T) {
 	}
 }
 
-func TestLegacyUbuntuImageCanonicalizesButIsNotResolved(t *testing.T) {
-	c, err := LoadCatalog(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec, _ := c.Provider("vm-ubuntu")
-	var legacy VMImageSpec
-	for _, image := range spec.VMImages {
-		if image.Deprecated && image.Architecture == "amd64" && image.Version == "24.04" {
-			legacy = image
-			break
-		}
-	}
-	if legacy.ID == "" {
-		t.Fatal("embedded catalog has no legacy Ubuntu Standard image")
-	}
-	artifact := Artifact{URL: legacy.URL, Version: legacy.Version, Build: legacy.Build, SHA256: legacy.SHA256}
-	canonical, ok := findVMImageForArtifact(spec, artifact, "amd64")
-	if !ok || canonical.ID != legacy.ID || canonical.Variant != "standard" {
-		t.Fatalf("legacy Ubuntu image was not canonicalized: %#v", canonical)
-	}
-	fresh, err := resolveVMImage(spec, Request{Version: "24.04", Build: "latest", Architecture: "amd64"})
-	if err != nil || fresh.Metadata["vm_image_variant"] != "minimal" || fresh.URL == legacy.URL {
-		t.Fatalf("fresh Ubuntu resolution selected legacy image: %#v err=%v", fresh, err)
-	}
-
-	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, "vm"), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	oldMeta := vmInstallMetadata{Schema: 1, Provider: spec.ID, Version: legacy.Version, Build: legacy.Build,
-		Architecture: "amd64", Checksum: legacy.SHA256, DiskGB: 10, Hostname: "pcvm"}
-	if err := writeJSONAtomic(filepath.Join(home, "vm", "install.json"), oldMeta); err != nil {
-		t.Fatal(err)
-	}
-	state := State{Provider: spec.ID, ResolvedVersion: legacy.Version, ResolvedBuild: legacy.Build, Artifact: artifact}
-	if migrated, err := repairLegacyVMInstallMetadata(home, spec, state, "amd64"); err != nil || !migrated {
-		t.Fatalf("legacy Ubuntu metadata migration=%v err=%v", migrated, err)
-	}
-	var migrated vmInstallMetadata
-	if err := readJSON(filepath.Join(home, "vm", "install.json"), &migrated); err != nil {
-		t.Fatal(err)
-	}
-	if migrated.Schema != vmInstallSchema || migrated.ImageID != legacy.ID || migrated.Variant != "standard" || migrated.Compression != "off" {
-		t.Fatalf("legacy Ubuntu metadata changed incorrectly: %+v", migrated)
-	}
-	app := &App{Config: Config{Home: home, Arch: "amd64"}, Catalog: c}
-	launch, err := app.rebuildLaunchState(context.Background(), spec, state)
-	if err != nil || launch.VMImageID != legacy.ID || launch.VMImageVariant != "standard" || launch.VMDiskCompression != "off" {
-		t.Fatalf("legacy Ubuntu launch state=%+v err=%v", launch, err)
-	}
-}
-
 func TestVMResourceCalculation(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -240,11 +187,30 @@ func TestVMTransitionAlwaysResetsOnImageChange(t *testing.T) {
 	if reset, reason := EvaluateTransition(state, NewProvider(spec), variant); !reset || reason != "changing a VM image variant requires reset" {
 		t.Fatalf("variant transition reset=%v reason=%q", reset, reason)
 	}
-	state.Artifact.Metadata = map[string]string{"disk_compression": "off"}
-	state.Artifact.URL = ""
-	resolved := Resolved{Artifact: Artifact{Version: "12", Build: "old", Metadata: map[string]string{"disk_compression": "zstd"}}}
-	if reset, reason := EvaluateTransition(state, NewProvider(spec), resolved); !reset || reason != "changing VM disk compression requires reset" {
-		t.Fatalf("compression transition reset=%v reason=%q", reset, reason)
+	state.ImmutableConfigHash = immutableConfigFingerprint(spec, Request{VMHostname: "pcvm", VMDiskGB: 10, VMDiskCompression: "off"})
+	plan := Reconcile(state, spec, Request{VMHostname: "pcvm", VMDiskGB: 10, VMDiskCompression: "zstd"}, nil)
+	if plan.Kind != ActionReset || plan.Reason != "install-immutable configuration changed" {
+		t.Fatalf("compression transition plan=%+v", plan)
+	}
+}
+
+func TestFindVMImageCanonicalizesPersistedV4IdentityWithoutURL(t *testing.T) {
+	image := VMImageSpec{ID: "debian-13-test-amd64", Variant: "genericcloud", Version: "13", Build: "test", Architecture: "amd64",
+		URL: "https://cloud.debian.org/images/cloud/test.qcow2", SHA512: strings.Repeat("a", 128)}
+	spec := ProviderSpec{ID: "vm-debian", VMImages: []VMImageSpec{image}}
+	state := State{ArtifactLock: ArtifactLock{ID: "vm:" + image.ID, Version: image.Version, Build: image.Build,
+		Integrity: ArtifactIntegrity{SHA512: image.SHA512}}}
+	hydrateStateAliases(&state)
+	if state.Artifact.URL != "" {
+		t.Fatal("persisted v4 state unexpectedly retained a URL")
+	}
+	got, ok := findVMImageForArtifact(spec, state.Artifact, "amd64")
+	if !ok || got.ID != image.ID {
+		t.Fatalf("canonical image=%+v ok=%v", got, ok)
+	}
+	state.Artifact.SHA512 = strings.Repeat("b", 128)
+	if _, ok := findVMImageForArtifact(spec, state.Artifact, "amd64"); ok {
+		t.Fatal("accepted a persisted VM identity with mismatched integrity")
 	}
 }
 
@@ -300,10 +266,7 @@ func TestVMStagedInstallAndResume(t *testing.T) {
 	if err := os.WriteFile(firmware, []byte("vars"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	originalRunner, originalFirmware := vmRunTool, vmFirmwareResolver
-	t.Cleanup(func() { vmRunTool, vmFirmwareResolver = originalRunner, originalFirmware })
-	vmFirmwareResolver = func(string) (string, string, error) { return firmware, firmware, nil }
-	vmRunTool = func(_ context.Context, _, _ anyWriter, name string, args ...string) error {
+	runTool := func(_ context.Context, _, _ anyWriter, name string, args ...string) error {
 		switch name {
 		case "qemu-img":
 			switch args[0] {
@@ -338,7 +301,8 @@ func TestVMStagedInstallAndResume(t *testing.T) {
 	}}}}
 	request := Request{Architecture: "amd64", VMDiskGB: 10, VMDiskCompression: "off", VMHostname: "pcvm"}
 	resolved := Resolved{Artifact: Artifact{URL: "https://cloud.debian.org/test.qcow2", Version: "13", Build: "build", SHA256: downloadedSHA256, SHA512: pinnedSHA512}}
-	ic := InstallContext{Home: home, ControlDir: control, Artifact: source, Request: request, Out: io.Discard, Err: io.Discard}
+	ic := InstallContext{Home: home, ControlDir: control, Artifact: source, Request: request, Out: io.Discard, Err: io.Discard,
+		Dependencies: Dependencies{RunVMTool: runTool, VMFirmware: func(string) (string, string, error) { return firmware, firmware, nil }}}
 	installed, err := provider.installVM(context.Background(), ic, resolved)
 	if err != nil {
 		t.Fatal(err)
@@ -366,98 +330,36 @@ func TestVMStagedInstallAndResume(t *testing.T) {
 	}
 }
 
-func TestRepairLegacyDebianVMInstallMetadata(t *testing.T) {
-	home := t.TempDir()
-	vmDir := filepath.Join(home, "vm")
-	if err := os.MkdirAll(vmDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	pinnedSHA512 := strings.Repeat("a", 128)
-	legacySHA256 := strings.Repeat("b", 64)
-	image := VMImageSpec{ID: "debian-test", Variant: "genericcloud", Version: "13", Build: "build", Architecture: "amd64", URL: "https://cloud.debian.org/debian.qcow2", SHA512: pinnedSHA512}
-	spec := ProviderSpec{ID: "vm-debian", Installer: "qemu-vm", VMImages: []VMImageSpec{image}}
-	state := State{Provider: spec.ID, ResolvedVersion: image.Version, ResolvedBuild: image.Build, Artifact: Artifact{
-		URL: image.URL, Version: image.Version, Build: image.Build, SHA256: legacySHA256, SHA512: pinnedSHA512,
-	}}
-	legacy := vmInstallMetadata{Schema: 1, Provider: spec.ID, Version: image.Version, Build: image.Build,
-		Architecture: image.Architecture, Checksum: legacySHA256, DiskGB: 10, Hostname: "pcvm"}
-	if err := writeJSONAtomic(filepath.Join(vmDir, "install.json"), legacy); err != nil {
-		t.Fatal(err)
-	}
-	repaired, err := repairLegacyVMInstallMetadata(home, spec, state, "amd64")
-	if err != nil || !repaired {
-		t.Fatalf("repaired=%v err=%v", repaired, err)
-	}
-	var got vmInstallMetadata
-	if err := readJSON(filepath.Join(vmDir, "install.json"), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Schema != vmInstallSchema || got.ImageID != image.ID || got.Variant != image.Variant || got.Compression != "off" || got.Checksum != pinnedSHA512 || got.DiskGB != legacy.DiskGB || got.Hostname != legacy.Hostname {
-		t.Fatalf("unexpected repaired metadata: %+v", got)
-	}
-
-	legacy.Checksum = legacySHA256
-	if err := writeJSONAtomic(filepath.Join(vmDir, "install.json"), legacy); err != nil {
-		t.Fatal(err)
-	}
-	state.Artifact.SHA512 = strings.Repeat("c", 128)
-	if repaired, err := repairLegacyVMInstallMetadata(home, spec, state, "amd64"); err != nil || repaired {
-		t.Fatalf("untrusted state repaired metadata: repaired=%v err=%v", repaired, err)
-	}
-}
-
-func TestRepairInterruptedLegacyVMStagingMetadata(t *testing.T) {
+func TestLegacyVMMetadataIsNotMigratedOrModified(t *testing.T) {
 	dir := t.TempDir()
-	pinnedSHA512 := strings.Repeat("a", 128)
-	legacySHA256 := strings.Repeat("b", 64)
-	want := vmInstallMetadata{Schema: vmInstallSchema, ImageID: "debian-test", Variant: "genericcloud", Compression: "off", Provider: "vm-debian", Version: "13", Build: "build",
-		Architecture: "amd64", Checksum: pinnedSHA512, DiskGB: 10, Hostname: "pcvm"}
-	legacy := want
-	legacy.Schema = 1
-	legacy.ImageID, legacy.Variant, legacy.Compression = "", "", ""
-	legacy.Checksum = legacySHA256
+	legacy := vmInstallMetadata{Schema: 2, ImageID: "legacy", Variant: "genericcloud", Compression: "off", Provider: "vm-debian", Version: "13", Build: "build",
+		Architecture: "amd64", Checksum: strings.Repeat("a", 128), DiskGB: 10, Hostname: "pcvm"}
 	path := filepath.Join(dir, "install.json")
-	disk := filepath.Join(dir, "disk.qcow2")
 	if err := writeJSONAtomic(path, legacy); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(disk, []byte("existing disk must not change"), 0o600); err != nil {
-		t.Fatal(err)
+	want := legacy
+	want.Schema = vmInstallSchema
+	if exists, matches, err := vmDirectoryStatus(dir, want); err != nil || !exists || matches {
+		t.Fatalf("legacy metadata status exists=%v matches=%v err=%v", exists, matches, err)
 	}
-	repaired, err := migrateLegacyVMMetadataFile(path, want, legacySHA256)
-	if err != nil || !repaired {
-		t.Fatalf("repaired=%v err=%v", repaired, err)
-	}
-	var got vmInstallMetadata
-	if err := readJSON(path, &got); err != nil || got != want {
-		t.Fatalf("got=%+v err=%v", got, err)
-	}
-	if data, err := os.ReadFile(disk); err != nil || string(data) != "existing disk must not change" {
-		t.Fatalf("legacy metadata migration changed disk: data=%q err=%v", data, err)
-	}
-
-	legacy.Hostname = "different"
-	if err := writeJSONAtomic(path, legacy); err != nil {
-		t.Fatal(err)
-	}
-	if repaired, err := migrateLegacyVMMetadataFile(path, want, legacySHA256); err != nil || repaired {
-		t.Fatalf("mismatched install was repaired: repaired=%v err=%v", repaired, err)
+	var unchanged vmInstallMetadata
+	if err := readJSON(path, &unchanged); err != nil || unchanged != legacy {
+		t.Fatalf("legacy metadata was modified: got=%+v err=%v", unchanged, err)
 	}
 }
 
 func TestVMFailedConvertCleansPartialDisk(t *testing.T) {
 	dir := t.TempDir()
 	disk := filepath.Join(dir, "disk.qcow2")
-	original := vmRunTool
-	t.Cleanup(func() { vmRunTool = original })
-	vmRunTool = func(_ context.Context, _, _ anyWriter, name string, args ...string) error {
+	runTool := func(_ context.Context, _, _ anyWriter, name string, args ...string) error {
 		if name == "qemu-img" && args[0] == "convert" {
 			_ = os.WriteFile(args[len(args)-1], []byte("partial"), 0o600)
 			return fmt.Errorf("simulated interruption")
 		}
 		return nil
 	}
-	if err := ensureVMStandaloneDisk(context.Background(), filepath.Join(dir, "base"), disk, 10, "off", io.Discard, io.Discard); err == nil {
+	if err := ensureVMStandaloneDisk(context.Background(), filepath.Join(dir, "base"), disk, 10, "off", io.Discard, io.Discard, runTool); err == nil {
 		t.Fatal("expected convert failure")
 	}
 	if _, err := os.Stat(disk); !os.IsNotExist(err) {
@@ -468,10 +370,8 @@ func TestVMFailedConvertCleansPartialDisk(t *testing.T) {
 func TestVMZstdConvertUsesDirectQEMUArguments(t *testing.T) {
 	dir := t.TempDir()
 	disk := filepath.Join(dir, "disk.qcow2")
-	original := vmRunTool
-	t.Cleanup(func() { vmRunTool = original })
 	var convert []string
-	vmRunTool = func(_ context.Context, _, _ anyWriter, name string, args ...string) error {
+	runTool := func(_ context.Context, _, _ anyWriter, name string, args ...string) error {
 		if name != "qemu-img" {
 			return fmt.Errorf("unexpected tool %s", name)
 		}
@@ -485,7 +385,7 @@ func TestVMZstdConvertUsesDirectQEMUArguments(t *testing.T) {
 			return fmt.Errorf("unexpected qemu-img args %v", args)
 		}
 	}
-	if err := ensureVMStandaloneDisk(context.Background(), filepath.Join(dir, "base.qcow2"), disk, 2, "zstd", io.Discard, io.Discard); err != nil {
+	if err := ensureVMStandaloneDisk(context.Background(), filepath.Join(dir, "base.qcow2"), disk, 2, "zstd", io.Discard, io.Discard, runTool); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"convert", "-f", "qcow2", "-O", "qcow2", "-c", "-o", "compat=1.1,compression_type=zstd"}

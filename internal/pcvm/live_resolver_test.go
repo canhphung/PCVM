@@ -24,7 +24,15 @@ func TestLiveResolvers(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			httpc := NewHTTPClient()
-			resolved, err := NewProvider(spec).Resolve(ctx, Request{Version: "latest", Build: "latest", RuntimeVersion: "auto", Architecture: runtime.GOARCH}, httpc)
+			request := Request{Version: "latest", Build: "latest", RuntimeVersion: "auto", Architecture: runtime.GOARCH}
+			if spec.ID == "modrinth-modpack" {
+				// A small public, server-side Fabric pack maintained on Modrinth.
+				// The generic live matrix must provide an explicit project because
+				// PCVM deliberately never auto-detects or bypasses provider policy.
+				request.ModpackMode = "project"
+				request.ModpackProject = "sfs"
+			}
+			resolved, err := NewProvider(spec).Resolve(ctx, request, httpc)
 			if err != nil {
 				t.Fatal(err)
 			}

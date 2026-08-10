@@ -9,9 +9,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"net"
-	"net/netip"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +28,11 @@ func ValidateProviderRequest(spec ProviderSpec, cfg Config) error {
 	isGame := len(spec.MenuPath) > 0 && spec.MenuPath[0] == "games"
 	if isGame && (cfg.Request.MaxPlayers < 1 || cfg.Request.MaxPlayers > 512) {
 		return fmt.Errorf("MAX_PLAYERS must be between 1 and 512")
+	}
+	if isGame {
+		if err := validateGameWorldName(cfg.Request.GameWorld); err != nil {
+			return err
+		}
 	}
 	if (isGame || spec.Installer == "web" || spec.Installer == "code-server") && (cfg.AllocationPort < 1 || cfg.AllocationPort > 65535) {
 		return fmt.Errorf("SERVER_PORT must be between 1 and 65535")
@@ -62,14 +64,45 @@ func ValidateProviderRequest(spec ProviderSpec, cfg Config) error {
 		if _, err := validatedWebRoot(cfg.Home, cfg.Request.WebRoot); err != nil {
 			return err
 		}
-		if err := validateWebProxy(cfg.Request.WebMode, cfg.Request.UpstreamURL); err != nil {
+		if err := validateWebProxyWith(cfg.Request.WebMode, cfg.Request.UpstreamURL, cfg.Dependencies.withDefaults().LookupIP); err != nil {
 			return err
 		}
 	}
-	if _, err := safeGameExtraArgs(cfg.Request.GameExtraArgs); err != nil {
+	if _, err := safeGameExtraArgs(spec.ID, cfg.Request.GameExtraArgs); err != nil {
 		return err
 	}
 	return nil
+}
+
+func validateGameWorldName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if len(name) > 128 || name == "." || name == ".." || strings.TrimSpace(name) != name || strings.ContainsAny(name, `/\:`) {
+		return fmt.Errorf("GAME_WORLD must be a single managed world name without path separators or traversal")
+	}
+	for _, character := range name {
+		if character == 0 || unicode.IsControl(character) {
+			return fmt.Errorf("GAME_WORLD must not contain control characters")
+		}
+	}
+	return nil
+}
+
+func managedGameWorldPath(home, relativeDirectory, name, extension string) (string, string, error) {
+	if err := validateGameWorldName(name); err != nil {
+		return "", "", err
+	}
+	if name == "" {
+		return "", "", fmt.Errorf("GAME_WORLD must not be empty when used as a save path")
+	}
+	root := filepath.Join(filepath.Clean(home), filepath.FromSlash(relativeDirectory))
+	target := filepath.Join(root, name+extension)
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("GAME_WORLD path escapes its managed directory")
+	}
+	return root, target, nil
 }
 
 func requestPort(cfg Config, variable string) int {
@@ -124,12 +157,12 @@ func (p *catalogProvider) installSteam(ctx context.Context, ic InstallContext, r
 	if err := secureMkdirAll(ic.Home, root, 0o750); err != nil {
 		return resolved, err
 	}
-	if p.spec.Options["overlay"] == "" {
+	if p.spec.Options.Overlay == "" {
 		if err := deactivateOverlay(root); err != nil {
 			return resolved, err
 		}
 	}
-	appid := p.spec.Options["appid"]
+	appid := p.spec.Options.AppID
 	args := []string{"+force_install_dir", root, "+login", "anonymous", "+app_update", appid, "validate", "+quit"}
 	cmd := exec.CommandContext(ctx, ic.Runtime, args...)
 	cmd.Dir = filepath.Dir(ic.Runtime)
@@ -150,8 +183,8 @@ func (p *catalogProvider) installSteam(ctx context.Context, ic InstallContext, r
 	resolved.Artifact.Build = buildID
 	resolved.Artifact.Metadata = map[string]string{"appid": appid}
 	resolved.WorkDir = root
-	resolved.Command = []string{filepath.Join(root, filepath.FromSlash(p.spec.Options["executable"]))}
-	if overlay := p.spec.Options["overlay"]; overlay != "" {
+	resolved.Command = []string{filepath.Join(root, filepath.FromSlash(p.spec.Options.Executable))}
+	if overlay := p.spec.Options.Overlay; overlay != "" {
 		if err := p.applyOverlay(ctx, ic, root, overlay); err != nil {
 			return resolved, err
 		}
@@ -167,7 +200,7 @@ func (p *catalogProvider) installOpenMP(ic InstallContext, resolved Resolved) (R
 	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
 		return resolved, err
 	}
-	staged, err := os.MkdirTemp(managed, ".openmp-*")
+	staged, err := os.MkdirTemp(managed, ".extract-*")
 	if err != nil {
 		return resolved, err
 	}
@@ -179,17 +212,24 @@ func (p *catalogProvider) installOpenMP(ic InstallContext, resolved Resolved) (R
 	if err := requireRegularExecutable(filepath.Join(source, "omp-server")); err != nil {
 		return resolved, fmt.Errorf("open.mp archive: %w", err)
 	}
-	versionRoot := filepath.Join(managed, resolved.Artifact.Version)
-	if err := replaceManagedDirectory(managed, source, versionRoot); err != nil {
+	candidate, err := moveIntoManagedCandidate(managed, source)
+	if err != nil {
 		return resolved, err
 	}
-	if err := linkMutableData(ic.Home, versionRoot,
+	candidateLive := true
+	defer func() {
+		if candidateLive {
+			_ = os.RemoveAll(candidate)
+		}
+	}()
+	if err := linkMutableData(ic.Home, candidate,
 		[]string{"gamemodes", "filterscripts", "scriptfiles", "models", "npcmodes", "recordings"},
 		[]string{"config.json", "bans.json"}); err != nil {
 		return resolved, err
 	}
-	resolved.WorkDir = versionRoot
-	resolved.Command = []string{filepath.Join(versionRoot, "omp-server")}
+	resolved.WorkDir = candidate
+	resolved.Command = []string{filepath.Join(candidate, "omp-server")}
+	candidateLive = false
 	return resolved, nil
 }
 
@@ -201,7 +241,7 @@ func (p *catalogProvider) installMTA(ctx context.Context, ic InstallContext, res
 	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
 		return resolved, err
 	}
-	staged, err := os.MkdirTemp(managed, ".mtasa-*")
+	staged, err := os.MkdirTemp(managed, ".extract-*")
 	if err != nil {
 		return resolved, err
 	}
@@ -212,13 +252,6 @@ func (p *catalogProvider) installMTA(ctx context.Context, ic InstallContext, res
 	source := filepath.Join(staged, "multitheftauto_linux_x64")
 	if err := requireRegularExecutable(filepath.Join(source, "mta-server64")); err != nil {
 		return resolved, fmt.Errorf("MTA server archive: %w", err)
-	}
-	versionRoot := filepath.Join(managed, resolved.Artifact.Version)
-	if err := replaceManagedDirectory(managed, source, versionRoot); err != nil {
-		return resolved, fmt.Errorf("install MTA server: %w", err)
-	}
-	if err := linkMutableData(ic.Home, versionRoot, []string{"mods"}, nil); err != nil {
-		return resolved, err
 	}
 	deathmatch := filepath.Join(ic.Home, "mods", "deathmatch")
 	if err := secureMkdirAll(ic.Home, deathmatch, 0o750); err != nil {
@@ -252,13 +285,27 @@ func (p *catalogProvider) installMTA(ctx context.Context, ic InstallContext, res
 	if err := copyTreeMissing(resourcesStage, filepath.Join(deathmatch, "resources")); err != nil {
 		return resolved, fmt.Errorf("install MTA resources: %w", err)
 	}
-	resolved.WorkDir = versionRoot
-	resolved.Command = []string{filepath.Join(versionRoot, "mta-server64")}
+	candidate, err := moveIntoManagedCandidate(managed, source)
+	if err != nil {
+		return resolved, fmt.Errorf("stage MTA server: %w", err)
+	}
+	candidateLive := true
+	defer func() {
+		if candidateLive {
+			_ = os.RemoveAll(candidate)
+		}
+	}()
+	if err := linkMutableData(ic.Home, candidate, []string{"mods"}, nil); err != nil {
+		return resolved, err
+	}
+	resolved.WorkDir = candidate
+	resolved.Command = []string{filepath.Join(candidate, "mta-server64")}
+	candidateLive = false
 	return resolved, nil
 }
 
 func (p *catalogProvider) downloadPinnedOption(ctx context.Context, ic InstallContext, name, kind string) (string, error) {
-	rawURL, checksum := p.spec.Options[name+"_url"], p.spec.Options[name+"_sha256"]
+	rawURL, checksum := p.spec.Options.PinnedArtifact(name)
 	if rawURL == "" || !validHexDigest(checksum, 64) {
 		return "", fmt.Errorf("%s catalog artifact is not pinned", name)
 	}
@@ -282,7 +329,7 @@ func (p *catalogProvider) installCodeServer(ic InstallContext, resolved Resolved
 	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
 		return resolved, err
 	}
-	staged, err := os.MkdirTemp(managed, ".code-server-*")
+	staged, err := os.MkdirTemp(managed, ".extract-*")
 	if err != nil {
 		return resolved, err
 	}
@@ -297,13 +344,41 @@ func (p *catalogProvider) installCodeServer(ic InstallContext, resolved Resolved
 	if err := requireRegularExecutable(filepath.Join(matches[0], "bin", "code-server")); err != nil {
 		return resolved, fmt.Errorf("code-server archive: %w", err)
 	}
-	versionRoot := filepath.Join(managed, resolved.Artifact.Version)
-	if err := replaceManagedDirectory(managed, matches[0], versionRoot); err != nil {
+	candidate, err := moveIntoManagedCandidate(managed, matches[0])
+	if err != nil {
 		return resolved, err
 	}
-	resolved.WorkDir = ic.Home
-	resolved.Command = []string{filepath.Join(versionRoot, "bin", "code-server")}
+	resolved.WorkDir = candidate
+	resolved.Command = []string{filepath.Join(candidate, "bin", "code-server")}
 	return resolved, nil
+}
+
+// moveIntoManagedCandidate gives a fully extracted tree a unique, unpublished
+// location. The ReleaseStore consumes this directory only after the provider
+// installer has validated it; no stable current path is overwritten here.
+func moveIntoManagedCandidate(managed, source string) (string, error) {
+	managed, source = filepath.Clean(managed), filepath.Clean(source)
+	if !pathWithin(managed, source) || source == managed {
+		return "", fmt.Errorf("candidate source escapes its managed root")
+	}
+	info, err := os.Lstat(source)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("candidate source is not a real directory")
+	}
+	candidate, err := os.MkdirTemp(managed, ".candidate-*")
+	if err != nil {
+		return "", err
+	}
+	if err := os.Remove(candidate); err != nil {
+		return "", err
+	}
+	if err := os.Rename(source, candidate); err != nil {
+		return "", err
+	}
+	return candidate, nil
 }
 
 func requireRegularExecutable(path string) error {
@@ -315,36 +390,6 @@ func requireRegularExecutable(path string) error {
 		return fmt.Errorf("%s is not a regular executable", path)
 	}
 	return nil
-}
-
-func replaceManagedDirectory(root, source, target string) error {
-	root, source, target = filepath.Clean(root), filepath.Clean(source), filepath.Clean(target)
-	if !strings.HasPrefix(source, root+string(filepath.Separator)) || !strings.HasPrefix(target, root+string(filepath.Separator)) {
-		return fmt.Errorf("managed directory replacement escapes its root")
-	}
-	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing symlink managed target")
-	} else if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	backup := target + ".previous"
-	if err := os.RemoveAll(backup); err != nil {
-		return err
-	}
-	hadTarget := false
-	if _, err := os.Lstat(target); err == nil {
-		if err := os.Rename(target, backup); err != nil {
-			return err
-		}
-		hadTarget = true
-	}
-	if err := os.Rename(source, target); err != nil {
-		if hadTarget {
-			_ = os.Rename(backup, target)
-		}
-		return err
-	}
-	return os.RemoveAll(backup)
 }
 
 func copyTreeMissing(source, target string) error {
@@ -487,8 +532,11 @@ func deactivateOverlay(root string) error {
 }
 
 func (p *catalogProvider) installTerraria(ic InstallContext, resolved Resolved) (Resolved, error) {
-	root := filepath.Join(ic.Home, "game")
-	tmp, err := os.MkdirTemp(ic.ControlDir, ".terraria-*")
+	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
+	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
+		return resolved, err
+	}
+	tmp, err := os.MkdirTemp(managed, ".extract-*")
 	if err != nil {
 		return resolved, err
 	}
@@ -500,70 +548,82 @@ func (p *catalogProvider) installTerraria(ic InstallContext, resolved Resolved) 
 	if err != nil {
 		return resolved, err
 	}
-	if err := secureMkdirAll(ic.Home, root, 0o750); err != nil {
+	candidate, err := moveIntoManagedCandidate(managed, linuxRoot)
+	if err != nil {
 		return resolved, err
 	}
-	if err := copyTree(linuxRoot, root); err != nil {
-		return resolved, err
-	}
-	executable := filepath.Join(root, p.spec.Options["executable"])
+	candidateLive := true
+	defer func() {
+		if candidateLive {
+			_ = os.RemoveAll(candidate)
+		}
+	}()
+	executable := filepath.Join(candidate, filepath.FromSlash(p.spec.Options.Executable))
 	if err := os.Chmod(executable, 0o750); err != nil {
 		return resolved, err
 	}
-	resolved.WorkDir, resolved.Command = root, []string{executable}
+	if err := requireRegularExecutable(executable); err != nil {
+		return resolved, fmt.Errorf("Terraria executable: %w", err)
+	}
+	resolved.WorkDir, resolved.Command = candidate, []string{executable}
+	candidateLive = false
 	return resolved, nil
 }
 
 func (p *catalogProvider) installFactorio(ctx context.Context, ic InstallContext, resolved Resolved) (Resolved, error) {
-	root := filepath.Join(ic.Home, "game")
-	if err := secureMkdirAll(ic.Home, root, 0o750); err != nil {
+	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
+	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
 		return resolved, err
 	}
-	list := exec.CommandContext(ctx, "tar", "-tJf", ic.Artifact)
-	listing, err := list.Output()
+	candidate, err := os.MkdirTemp(managed, ".candidate-*")
 	if err != nil {
-		return resolved, fmt.Errorf("inspect Factorio archive: %w", err)
+		return resolved, err
 	}
-	for _, line := range strings.Split(string(listing), "\n") {
-		clean := filepath.Clean(filepath.FromSlash(line))
-		if line != "" && (filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator))) {
-			return resolved, fmt.Errorf("unsafe Factorio archive path %q", line)
+	candidateLive := true
+	defer func() {
+		if candidateLive {
+			_ = os.RemoveAll(candidate)
 		}
-	}
-	staged, err := os.MkdirTemp(ic.ControlDir, ".factorio-*")
-	if err != nil {
-		return resolved, err
-	}
-	defer os.RemoveAll(staged)
-	cmd := exec.CommandContext(ctx, "tar", "-xJf", ic.Artifact, "--strip-components=1", "-C", staged)
-	cmd.Stdout, cmd.Stderr = ic.Out, ic.Err
-	if err := cmd.Run(); err != nil {
+	}()
+	if err := extractTarXZSafe(ctx, ic.Artifact, candidate, 1); err != nil {
 		return resolved, fmt.Errorf("extract Factorio: %w", err)
 	}
-	if err := copyTree(staged, root); err != nil {
-		return resolved, fmt.Errorf("install Factorio staged tree: %w", err)
-	}
-	executable := filepath.Join(root, p.spec.Options["executable"])
+	executable := filepath.Join(candidate, filepath.FromSlash(p.spec.Options.Executable))
 	if err := os.Chmod(executable, 0o750); err != nil {
 		return resolved, err
 	}
-	resolved.WorkDir, resolved.Command = root, []string{executable}
+	if err := requireRegularExecutable(executable); err != nil {
+		return resolved, fmt.Errorf("Factorio executable: %w", err)
+	}
+	resolved.WorkDir, resolved.Command = candidate, []string{executable}
+	candidateLive = false
 	return resolved, nil
 }
 
 func (p *catalogProvider) installTModLoader(ic InstallContext, resolved Resolved) (Resolved, error) {
-	root := filepath.Join(ic.Home, "game")
-	if err := secureMkdirAll(ic.Home, root, 0o750); err != nil {
+	managed := filepath.Join(ic.ControlDir, "managed", p.spec.ID)
+	if err := secureMkdirAll(ic.ControlDir, managed, 0o750); err != nil {
 		return resolved, err
 	}
-	if err := extractZipSafe(ic.Artifact, root); err != nil {
-		return resolved, err
-	}
-	dll, err := findFile(root, p.spec.Options["executable"])
+	candidate, err := os.MkdirTemp(managed, ".candidate-*")
 	if err != nil {
 		return resolved, err
 	}
-	resolved.WorkDir, resolved.Command = root, []string{ic.Runtime, dll}
+	candidateLive := true
+	defer func() {
+		if candidateLive {
+			_ = os.RemoveAll(candidate)
+		}
+	}()
+	if err := extractZipSafe(ic.Artifact, candidate); err != nil {
+		return resolved, err
+	}
+	dll, err := findFile(candidate, p.spec.Options.Executable)
+	if err != nil {
+		return resolved, err
+	}
+	resolved.WorkDir, resolved.Command = candidate, []string{ic.Runtime, dll}
+	candidateLive = false
 	return resolved, nil
 }
 
@@ -606,29 +666,6 @@ func findFile(root, base string) (string, error) {
 		return "", fmt.Errorf("installation contains no %s", base)
 	}
 	return found, nil
-}
-
-func copyTree(source, target string) error {
-	return filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		destination := filepath.Join(target, relative)
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing symlink in copied tree: %s", relative)
-		}
-		if info.IsDir() {
-			return secureMkdirAll(target, destination, 0o750)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("refusing non-regular file in copied tree: %s", relative)
-		}
-		return copyFile(path, destination, info.Mode().Perm())
-	})
 }
 
 func (p *catalogProvider) buildServiceProcess(ctx context.Context, cfg Config, state LaunchState) (ProcessSpec, error) {
@@ -690,7 +727,8 @@ func (p *catalogProvider) buildWebProcess(cfg Config, state LaunchState) (Proces
 	if err != nil {
 		return ProcessSpec{}, err
 	}
-	upstream, err := canonicalWebProxy(cfg.Request.WebMode, cfg.Request.UpstreamURL)
+	lookup := cfg.Dependencies.withDefaults().LookupIP
+	upstream, err := canonicalWebProxyWith(cfg.Request.WebMode, cfg.Request.UpstreamURL, lookup)
 	if err != nil {
 		return ProcessSpec{}, err
 	}
@@ -698,12 +736,9 @@ func (p *catalogProvider) buildWebProcess(cfg Config, state LaunchState) (Proces
 	if err := secureMkdirAll(cfg.Control, managed, 0o750); err != nil {
 		return ProcessSpec{}, err
 	}
-	extensions := filepath.Join(cfg.Control, "web", p.spec.ID, "conf.d")
-	if err := secureMkdirAll(cfg.Control, extensions, 0o750); err != nil {
-		return ProcessSpec{}, err
-	}
 	port := strconv.Itoa(cfg.AllocationPort)
 	var command []string
+	var configPath string
 	switch p.spec.ID {
 	case "nginx":
 		binary, err := exec.LookPath("nginx")
@@ -715,47 +750,57 @@ func (p *catalogProvider) buildWebProcess(cfg Config, state LaunchState) (Proces
 				return ProcessSpec{}, err
 			}
 		}
-		config := nginxConfig(managed, extensions, root, port, cfg.Request.WebMode, upstream)
-		path := filepath.Join(managed, "nginx.conf")
-		if err := writeAtomicFile(path, []byte(config), 0o640); err != nil {
-			return ProcessSpec{}, err
-		}
-		command = []string{binary, "-c", path, "-g", "daemon off;"}
+		configPath = filepath.Join(managed, "nginx.conf")
+		command = []string{binary, "-c", configPath, "-g", "daemon off;"}
 	case "apache":
 		binary, err := exec.LookPath("apache2")
 		if err != nil {
 			return ProcessSpec{}, err
 		}
-		config := apacheConfig(managed, extensions, root, port, cfg.Request.WebMode, upstream)
-		path := filepath.Join(managed, "apache2.conf")
-		if err := writeAtomicFile(path, []byte(config), 0o640); err != nil {
-			return ProcessSpec{}, err
-		}
-		command = []string{binary, "-f", path, "-DFOREGROUND"}
+		configPath = filepath.Join(managed, "apache2.conf")
+		command = []string{binary, "-f", configPath, "-DFOREGROUND"}
 	case "caddy":
 		binary := first(state.Command)
 		if binary == "" {
 			return ProcessSpec{}, fmt.Errorf("Caddy runtime path is missing")
 		}
-		defaultExtension := filepath.Join(extensions, "00-pcvm.caddy")
-		if _, err := os.Stat(defaultExtension); os.IsNotExist(err) {
-			if err := os.WriteFile(defaultExtension, []byte("# Add persistent Caddy directives in this directory.\n"), 0o640); err != nil {
-				return ProcessSpec{}, err
-			}
-		}
-		config := caddyConfig(extensions, root, port, cfg.Request.WebMode, upstream)
-		path := filepath.Join(managed, "Caddyfile")
-		if err := writeAtomicFile(path, []byte(config), 0o640); err != nil {
-			return ProcessSpec{}, err
-		}
-		command = []string{binary, "run", "--config", path, "--adapter", "caddyfile"}
+		configPath = filepath.Join(managed, "Caddyfile")
+		command = []string{binary, "run", "--config", configPath, "--adapter", "caddyfile"}
 	default:
 		return ProcessSpec{}, fmt.Errorf("unsupported web provider %q", p.spec.ID)
+	}
+	writeConfig := func(proxyTarget string) error {
+		var config string
+		switch p.spec.ID {
+		case "nginx":
+			config = nginxConfig(managed, root, port, cfg.Request.WebMode, proxyTarget)
+		case "apache":
+			config = apacheConfig(managed, root, port, cfg.Request.WebMode, proxyTarget)
+		case "caddy":
+			config = caddyConfig(root, port, cfg.Request.WebMode, proxyTarget)
+		}
+		return writeAtomicFile(configPath, []byte(config), 0o640)
+	}
+	var beforeStart func(context.Context) (func() error, error)
+	if cfg.Request.WebMode == "proxy" {
+		beforeStart = func(ctx context.Context) (func() error, error) {
+			loopbackTarget, closeProxy, err := startSafeProxyWith(ctx, upstream, lookup)
+			if err != nil {
+				return nil, err
+			}
+			if err := writeConfig(loopbackTarget); err != nil {
+				_ = closeProxy()
+				return nil, err
+			}
+			return closeProxy, nil
+		}
+	} else if err := writeConfig(""); err != nil {
+		return ProcessSpec{}, err
 	}
 	readiness := p.spec.Readiness
 	readiness.PortVariable = strconv.Itoa(cfg.AllocationPort)
 	return ProcessSpec{Command: command, Directory: cfg.Home, Environment: state.Environment, Readiness: readiness,
-		Control: p.spec.Control, ReadyTimeout: time.Duration(readiness.TimeoutSeconds) * time.Second}, nil
+		Control: p.spec.Control, ReadyTimeout: time.Duration(readiness.TimeoutSeconds) * time.Second, BeforeStart: beforeStart}, nil
 }
 
 func (p *catalogProvider) buildGameProcess(_ context.Context, cfg Config, state LaunchState) (ProcessSpec, error) {
@@ -765,7 +810,7 @@ func (p *catalogProvider) buildGameProcess(_ context.Context, cfg Config, state 
 	}
 	executable := first(state.Command)
 	if p.spec.Installer == "steamcmd" {
-		executable = filepath.Join(root, filepath.FromSlash(p.spec.Options["executable"]))
+		executable = filepath.Join(root, filepath.FromSlash(p.spec.Options.Executable))
 	}
 	if p.spec.ID == "satisfactory" {
 		matches, _ := filepath.Glob(filepath.Join(root, "FactoryGame", "Binaries", "Linux", "*-Linux-Shipping"))
@@ -789,7 +834,7 @@ func (p *catalogProvider) buildGameProcess(_ context.Context, cfg Config, state 
 		world = "Dedicated"
 	}
 	command := []string{executable}
-	if p.spec.ID == "tmodloader" {
+	if p.spec.ID == "tmodloader" || p.spec.ID == "tshock" {
 		command = append([]string(nil), state.Command...)
 	}
 	environment := append([]string(nil), state.Environment...)
@@ -876,23 +921,40 @@ func (p *catalogProvider) buildGameProcess(_ context.Context, cfg Config, state 
 			command = append(command, "-GSLT", cfg.Request.SteamGSLT)
 		}
 	case "terraria", "tmodloader":
-		worldDir := filepath.Join(cfg.Home, "saves", "Worlds")
-		if err := os.MkdirAll(worldDir, 0o750); err != nil {
+		worldDir, worldPath, err := managedGameWorldPath(cfg.Home, "saves/Worlds", world, ".wld")
+		if err != nil {
 			return ProcessSpec{}, err
 		}
-		worldPath := filepath.Join(worldDir, world+".wld")
+		if err := secureMkdirAll(cfg.Home, worldDir, 0o750); err != nil {
+			return ProcessSpec{}, err
+		}
 		command = append(command, "-ip", "0.0.0.0", "-port", port, "-maxplayers", players, "-world", worldPath, "-worldname", world, "-autocreate", "2")
 		if password != "" {
 			command = append(command, "-password", password)
 		}
+	case "tshock":
+		worldName := cfg.Request.GameWorld
+		if worldName == "" {
+			worldName = "world"
+		}
+		worldDir, worldPath, err := managedGameWorldPath(cfg.Home, "world", worldName, ".wld")
+		if err != nil {
+			return ProcessSpec{}, err
+		}
+		if err := secureMkdirAll(cfg.Home, worldDir, 0o750); err != nil {
+			return ProcessSpec{}, err
+		}
+		command = append(command, "-port", port, "-maxplayers", players, "-world", worldPath, "-autocreate", "2")
 	case "satisfactory":
 		command = append(command, "FactoryGame", "-Port="+port, "-ReliablePort="+strconv.Itoa(cfg.Request.ReliablePort), "-ExternalReliablePort="+strconv.Itoa(cfg.Request.ReliablePort))
 	case "factorio":
-		saves := filepath.Join(cfg.Home, "saves")
-		if err := os.MkdirAll(saves, 0o750); err != nil {
+		saves, save, err := managedGameWorldPath(cfg.Home, "saves", world, ".zip")
+		if err != nil {
 			return ProcessSpec{}, err
 		}
-		save := filepath.Join(saves, world+".zip")
+		if err := secureMkdirAll(cfg.Home, saves, 0o750); err != nil {
+			return ProcessSpec{}, err
+		}
 		if _, err := os.Stat(save); os.IsNotExist(err) {
 			create := exec.Command(executable, "--create", save)
 			create.Dir, create.Stdout, create.Stderr = root, os.Stdout, os.Stderr
@@ -913,7 +975,7 @@ func (p *catalogProvider) buildGameProcess(_ context.Context, cfg Config, state 
 	default:
 		return ProcessSpec{}, fmt.Errorf("unsupported game provider %q", p.spec.ID)
 	}
-	extra, err := safeGameExtraArgs(cfg.Request.GameExtraArgs)
+	extra, err := safeGameExtraArgs(p.spec.ID, cfg.Request.GameExtraArgs)
 	if err != nil {
 		return ProcessSpec{}, err
 	}
@@ -924,8 +986,8 @@ func (p *catalogProvider) buildGameProcess(_ context.Context, cfg Config, state 
 	if control.PortVariable != "" {
 		control.PortVariable = strconv.Itoa(requestPort(cfg, control.PortVariable))
 	}
-	return ProcessSpec{Command: command, Directory: root, Environment: environment, Readiness: readiness, ReadyPatterns: readiness.Patterns,
-		Control: control, StopCommand: control.StopCommand, ReadyTimeout: time.Duration(readiness.TimeoutSeconds) * time.Second}, nil
+	return ProcessSpec{Command: command, Directory: root, Environment: environment, Readiness: readiness,
+		Control: control, ReadyTimeout: time.Duration(readiness.TimeoutSeconds) * time.Second}, nil
 }
 
 func configureOpenMP(root string, cfg Config) error {
@@ -1081,29 +1143,6 @@ func envValue(value, fallback string) string {
 	return value
 }
 
-func safeGameExtraArgs(raw string) ([]string, error) {
-	args, err := SplitArgs(raw)
-	if err != nil {
-		return nil, fmt.Errorf("GAME_EXTRA_ARGS: %w", err)
-	}
-	protected := []string{
-		"-port", "--port", "--httpport", "+server.port", "-serverport", "-publicport", "-queryport", "-steamport", "-udpport",
-		"-gameport", "-gameport2", "-gameport3", "-rconport", "+rcon.port", "-telnetport", "-reliableport",
-		"-externalreliableport", "-ip", "+server.ip", "-bind", "-force_install_dir", "+force_install_dir",
-		"+login", "+app_update", "-adminpassword", "-rconpassword", "+rcon.password", "-telnetpassword",
-		"-cachedir", "-logfile", "--config", "--bind-addr", "--auth", "--user-data-dir", "--extensions-dir",
-	}
-	for _, arg := range args {
-		lower := strings.ToLower(arg)
-		for _, prefix := range protected {
-			if lower == prefix || strings.HasPrefix(lower, prefix+"=") {
-				return nil, fmt.Errorf("GAME_EXTRA_ARGS may not override managed option %q", arg)
-			}
-		}
-	}
-	return args, nil
-}
-
 func ensureAdminSecret(cfg Config, family string) (string, error) {
 	if cfg.Request.AdminPassword != "" {
 		return cfg.Request.AdminPassword, nil
@@ -1146,6 +1185,19 @@ func validatedWebRoot(home, relative string) (string, error) {
 	if relative == "" {
 		relative = "public"
 	}
+	if len(relative) > 512 || strings.ContainsAny(relative, "\x00\r\n\t\"'`{};#$") {
+		return "", fmt.Errorf("WEB_ROOT contains characters that are unsafe in managed server configuration")
+	}
+	for _, component := range strings.FieldsFunc(filepath.ToSlash(relative), func(character rune) bool { return character == '/' }) {
+		if component == "" || component == "." || component == ".." {
+			continue
+		}
+		for _, character := range component {
+			if character > 127 || !unicode.IsLetter(character) && !unicode.IsDigit(character) && character != '.' && character != '_' && character != '-' {
+				return "", fmt.Errorf("WEB_ROOT path components may only contain ASCII letters, digits, dot, underscore and dash")
+			}
+		}
+	}
 	clean := filepath.Clean(relative)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("WEB_ROOT must stay inside /home/container")
@@ -1165,117 +1217,28 @@ func validatedWebRoot(home, relative string) (string, error) {
 	return root, nil
 }
 
-func validateWebProxy(mode, upstream string) error {
-	_, err := canonicalWebProxy(mode, upstream)
-	return err
-}
-
-var proxyLookupIP = net.DefaultResolver.LookupIPAddr
-
-var blockedProxyPrefixes = []netip.Prefix{
-	netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("192.0.0.0/24"),
-	netip.MustParsePrefix("192.0.2.0/24"),
-	netip.MustParsePrefix("198.18.0.0/15"),
-	netip.MustParsePrefix("198.51.100.0/24"),
-	netip.MustParsePrefix("203.0.113.0/24"),
-	netip.MustParsePrefix("240.0.0.0/4"),
-	netip.MustParsePrefix("2001:db8::/32"),
-	netip.MustParsePrefix("fec0::/10"),
-}
-
-func canonicalWebProxy(mode, upstream string) (string, error) {
-	if mode != "static" && mode != "proxy" {
-		return "", fmt.Errorf("WEB_MODE must be static or proxy")
-	}
-	if mode == "static" {
-		return "", nil
-	}
-	if strings.ContainsAny(upstream, " \t\r\n;{}#\"'\\$`") {
-		return "", fmt.Errorf("UPSTREAM_URL contains characters that are unsafe in managed server configuration")
-	}
-	parsed, err := url.Parse(upstream)
-	if err != nil || parsed.Opaque != "" || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" {
-		return "", fmt.Errorf("UPSTREAM_URL must be an HTTP(S) URL without credentials or fragments")
-	}
-	host := strings.ToLower(parsed.Hostname())
-	if ip := net.ParseIP(host); ip == nil {
-		if len(host) > 253 || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") || strings.Contains(host, "..") {
-			return "", fmt.Errorf("UPSTREAM_URL has an invalid hostname")
-		}
-		for _, r := range host {
-			if r > unicode.MaxASCII || !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '.' && r != '-' {
-				return "", fmt.Errorf("UPSTREAM_URL hostname must use ASCII DNS labels")
-			}
-		}
-	}
-	if port := parsed.Port(); port != "" {
-		value, portErr := strconv.Atoi(port)
-		if portErr != nil || value < 1 || value > 65535 {
-			return "", fmt.Errorf("UPSTREAM_URL has an invalid port")
-		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	addresses, err := proxyLookupIP(ctx, host)
-	if err != nil {
-		return "", fmt.Errorf("resolve UPSTREAM_URL host %q: %w", host, err)
-	}
-	if len(addresses) == 0 {
-		return "", fmt.Errorf("resolve UPSTREAM_URL host %q: no addresses", host)
-	}
-	for _, address := range addresses {
-		if !publicProxyIP(address.IP) {
-			return "", fmt.Errorf("UPSTREAM_URL host %q resolves to blocked address %s", host, address.IP.String())
-		}
-	}
-	parsed.Scheme = strings.ToLower(parsed.Scheme)
-	canonical := parsed.String()
-	if strings.ContainsAny(canonical, " \t\r\n;{}#\"'\\$`") {
-		return "", fmt.Errorf("UPSTREAM_URL cannot be represented safely in managed server configuration")
-	}
-	return canonical, nil
-}
-
-func publicProxyIP(ip net.IP) bool {
-	address, ok := netip.AddrFromSlice(ip)
-	if !ok {
-		return false
-	}
-	address = address.Unmap()
-	if !address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsMulticast() || address.IsUnspecified() {
-		return false
-	}
-	for _, prefix := range blockedProxyPrefixes {
-		if prefix.Contains(address) {
-			return false
-		}
-	}
-	return true
-}
-
-func nginxConfig(managed, extensions, root, port, mode, upstream string) string {
+func nginxConfig(managed, root, port, mode, upstream string) string {
 	location := "try_files $uri $uri/ =404;"
 	if mode == "proxy" {
 		location = "proxy_pass \"" + upstream + "\";\n            proxy_set_header Host $host;\n            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
 	}
-	return fmt.Sprintf("worker_processes 1;\npid %s;\nerror_log /dev/stderr info;\nevents { worker_connections 1024; }\nhttp {\n    include /etc/nginx/mime.types;\n    access_log /dev/stdout;\n    client_body_temp_path %s;\n    proxy_temp_path %s;\n    fastcgi_temp_path %s;\n    uwsgi_temp_path %s;\n    scgi_temp_path %s;\n    server {\n        listen 0.0.0.0:%s;\n        root %s;\n        index index.html;\n        location / { %s }\n        include %s/*.conf;\n    }\n}\n", filepath.ToSlash(filepath.Join(managed, "nginx.pid")), filepath.ToSlash(filepath.Join(managed, "tmp", "client")), filepath.ToSlash(filepath.Join(managed, "tmp", "proxy")), filepath.ToSlash(filepath.Join(managed, "tmp", "fastcgi")), filepath.ToSlash(filepath.Join(managed, "tmp", "uwsgi")), filepath.ToSlash(filepath.Join(managed, "tmp", "scgi")), port, filepath.ToSlash(root), location, filepath.ToSlash(extensions))
+	return fmt.Sprintf("worker_processes 1;\npid %s;\nerror_log /dev/stderr info;\nevents { worker_connections 1024; }\nhttp {\n    include /etc/nginx/mime.types;\n    access_log /dev/stdout;\n    client_body_temp_path %s;\n    proxy_temp_path %s;\n    fastcgi_temp_path %s;\n    uwsgi_temp_path %s;\n    scgi_temp_path %s;\n    server {\n        listen 0.0.0.0:%s;\n        root %s;\n        index index.html;\n        location / { %s }\n    }\n}\n", filepath.ToSlash(filepath.Join(managed, "nginx.pid")), filepath.ToSlash(filepath.Join(managed, "tmp", "client")), filepath.ToSlash(filepath.Join(managed, "tmp", "proxy")), filepath.ToSlash(filepath.Join(managed, "tmp", "fastcgi")), filepath.ToSlash(filepath.Join(managed, "tmp", "uwsgi")), filepath.ToSlash(filepath.Join(managed, "tmp", "scgi")), port, filepath.ToSlash(root), location)
 }
 
-func apacheConfig(managed, extensions, root, port, mode, upstream string) string {
+func apacheConfig(managed, root, port, mode, upstream string) string {
 	location := fmt.Sprintf("<Directory %q>\nRequire all granted\n</Directory>\n", root)
 	if mode == "proxy" {
 		location = fmt.Sprintf("ProxyRequests Off\nProxyPass / %q\nProxyPassReverse / %q\n", upstream, upstream)
 	}
-	return fmt.Sprintf("ServerRoot /etc/apache2\nDefaultRuntimeDir %s\nPidFile %s\nMutex file:%s default\nListen 0.0.0.0:%s\nServerName localhost\nIncludeOptional /etc/apache2/mods-enabled/*.load\nIncludeOptional /etc/apache2/mods-enabled/*.conf\nTypesConfig /etc/mime.types\nErrorLog /proc/self/fd/2\nLogLevel warn\nLogFormat \"%%h %%l %%u %%t \\\"%%r\\\" %%>s %%b\" combined\nCustomLog /proc/self/fd/1 combined\nDocumentRoot %q\n%sIncludeOptional %s/*.conf\n", managed, filepath.Join(managed, "apache.pid"), managed, port, root, location, extensions)
+	return fmt.Sprintf("ServerRoot /etc/apache2\nDefaultRuntimeDir %s\nPidFile %s\nMutex file:%s default\nListen 0.0.0.0:%s\nServerName localhost\nIncludeOptional /etc/apache2/mods-enabled/*.load\nIncludeOptional /etc/apache2/mods-enabled/*.conf\nTypesConfig /etc/mime.types\nErrorLog /proc/self/fd/2\nLogLevel warn\nLogFormat \"%%h %%l %%u %%t \\\"%%r\\\" %%>s %%b\" combined\nCustomLog /proc/self/fd/1 combined\nDocumentRoot %q\n%s", managed, filepath.Join(managed, "apache.pid"), managed, port, root, location)
 }
 
-func caddyConfig(extensions, root, port, mode, upstream string) string {
+func caddyConfig(root, port, mode, upstream string) string {
 	body := fmt.Sprintf("\troot * %s\n\tfile_server", filepath.ToSlash(root))
 	if mode == "proxy" {
 		body = "\treverse_proxy \"" + upstream + "\""
 	}
-	return fmt.Sprintf("{\n\tadmin off\n\tauto_https off\n\tpersist_config off\n\tservers {\n\t\tprotocols h1\n\t}\n}\n\n:%s {\n\tbind 0.0.0.0\n%s\n\timport %s/*.caddy\n}\n", port, body, filepath.ToSlash(extensions))
+	return fmt.Sprintf("{\n\tadmin off\n\tauto_https off\n\tpersist_config off\n\tservers {\n\t\tprotocols h1\n\t}\n}\n\n:%s {\n\tbind 0.0.0.0\n%s\n}\n", port, body)
 }
 
 func writeAtomicFile(path string, data []byte, mode os.FileMode) error {
