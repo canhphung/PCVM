@@ -720,7 +720,11 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 	if cfg.Arch == "amd64" {
 		args = append(args, "-device", "virtio-net-pci,netdev=net0")
 	} else {
-		args = append(args, "-device", "virtio-net-pci,netdev=net0,romfile=")
+		args = append(args,
+			"-device", "virtio-net-pci,netdev=net0,romfile=",
+			"-object", "rng-random,filename=/dev/urandom,id=rng0",
+			"-device", "virtio-rng-pci,rng=rng0,romfile=",
+		)
 	}
 	return args
 }

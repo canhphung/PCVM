@@ -50,7 +50,7 @@ jobs:
           disk_gb=8
           [ "$PROVIDER" != vm-alpine ] || disk_gb=2
           ready_attempts=300
-          [ "$ARCH" != arm64 ] || ready_attempts=600
+          [ "$ARCH" != arm64 ] || ready_attempts=900
           docker volume create pcvm-vm-smoke >/dev/null
           log_file=/tmp/pcvm-vm.log
           log_pid=
