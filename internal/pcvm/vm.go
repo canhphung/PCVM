@@ -678,12 +678,12 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		)
 		args = append([]string{"-machine", "q35", "-cpu", "max"}, args...)
 	} else {
-		// The ARM virt machine exposes virtio over MMIO. Using the PCI variants
-		// makes AAVMF attempt to load efi-virtio.rom, which is intentionally not
-		// present in the lightweight VM image and prevents the guest from booting.
+		// ARM virt provides a PCIe host and its PCI virtio path remains reliable
+		// with SMP under Debian's QEMU 7.2 TCG. Disable optional device ROMs
+		// explicitly because the lightweight VM image does not ship efi-virtio.rom.
 		args = append(args,
-			"-device", "virtio-blk-device,drive=osdisk,bootindex=1",
-			"-device", "virtio-scsi-device,id=scsi0",
+			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
+			"-device", "virtio-scsi-pci,id=scsi0,romfile=",
 		)
 		// A bounded ARMv8 CPU avoids the large SVE/SME feature surface exposed by
 		// `max`, which is dramatically slower under pure TCG while remaining a
@@ -698,7 +698,7 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 	if cfg.Arch == "amd64" {
 		args = append(args, "-device", "virtio-net-pci,netdev=net0")
 	} else {
-		args = append(args, "-device", "virtio-net-device,netdev=net0")
+		args = append(args, "-device", "virtio-net-pci,netdev=net0,romfile=")
 	}
 	return args
 }
