@@ -62,11 +62,15 @@ jobs:
               cat "$log_file" 2>/dev/null || docker logs pcvm-vm 2>&1 || true
               echo '::endgroup::'
             fi
+            docker rm -f pcvm-vm >/dev/null 2>&1 || true
             if [ -n "$log_pid" ]; then
               kill "$log_pid" >/dev/null 2>&1 || true
-              wait "$log_pid" 2>/dev/null || true
+              for _ in $(seq 1 20); do
+                kill -0 "$log_pid" >/dev/null 2>&1 || break
+                sleep 0.1
+              done
+              kill -KILL "$log_pid" >/dev/null 2>&1 || true
             fi
-            docker rm -f pcvm-vm >/dev/null 2>&1 || true
             docker volume rm pcvm-vm-smoke >/dev/null 2>&1 || true
             return "$status"
           }
