@@ -93,8 +93,16 @@ jobs:
           printf '%s\n' 'uname -a' 'sudo -n id -u' 'sudo -i -c "id -u"' 'sudo reboot' > /tmp/serial-input
           timeout --signal=TERM --kill-after=5s 20s \
             docker attach --sig-proxy=false pcvm-vm < /tmp/serial-input > /tmp/serial.log 2>&1 || true
-          grep -Eq 'Linux .* (x86_64|aarch64)' /tmp/serial.log
-          grep -Eq '^0\r?$' /tmp/serial.log
+          serial_ok=0
+          for _ in $(seq 1 10); do
+            if grep -Eq 'Linux .* (x86_64|aarch64)' "$log_file" && \
+              [ "$(grep -Ec '^0\r?$' "$log_file" || true)" -ge 2 ]; then
+              serial_ok=1
+              break
+            fi
+            sleep 1
+          done
+          test "$serial_ok" = 1
           echo "[smoke] waiting up to ${ready_attempts}s for readiness after guest reboot"
           for _ in $(seq 1 "$ready_attempts"); do
             test "$(grep -Fc '[PCVM] READY' "$log_file")" -ge 2 && break
