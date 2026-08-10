@@ -200,7 +200,7 @@ func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 			decoded.Write(raw)
 		}
 	}
-	for _, script := range []string{"ttyAMA0 ttyS0", "/sys/class/tty/console/active", `> "/dev/$console"`, "rc-update add local default", "mkdir /run/pcvm-ready.once", "rm -f /etc/doas.conf /etc/doas.d/*.conf", "permit nopass pcvm as root", "[PCVM-GUEST] READY", `exec /usr/bin/doas /bin/ash -c "$@"`, `exec /usr/bin/doas /bin/ash -l "$@"`} {
+	for _, script := range []string{"ttyAMA0 ttyS0", "/sys/class/tty/console/active", `> "/dev/$console"`, "rc-update add local default", "/proc/sys/kernel/random/boot_id", "/run/pcvm-ready.boot", "rm -f /etc/doas.conf /etc/doas.d/*.conf", "permit nopass pcvm as root", "[PCVM-GUEST] READY", `exec /usr/bin/doas /bin/ash -c "$@"`, `exec /usr/bin/doas /bin/ash -l "$@"`} {
 		if !strings.Contains(decoded.String(), script) {
 			t.Fatalf("Alpine cloud-init missing encoded %q", script)
 		}

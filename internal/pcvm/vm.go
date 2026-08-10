@@ -674,14 +674,20 @@ for candidate in $active_consoles ttyAMA0 ttyS0; do
     esac
 done
 [ -n "$console" ] || exit 1
-if mkdir /run/pcvm-ready.once 2>/dev/null; then
-    if printf '%s\n' '[PCVM-GUEST] READY' > "/dev/$console"; then
-        exit 0
-    fi
-    rmdir /run/pcvm-ready.once 2>/dev/null || true
+boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+[ -n "$boot_id" ] || exit 1
+marker=/run/pcvm-ready.boot
+if [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null || true)" = "$boot_id" ]; then
+    exit 0
+fi
+if ! printf '%s\n' "$boot_id" > "$marker"; then
     exit 1
 fi
-exit 0
+if printf '%s\n' '[PCVM-GUEST] READY' > "/dev/$console"; then
+    exit 0
+fi
+rm -f "$marker"
+exit 1
 `
 }
 
