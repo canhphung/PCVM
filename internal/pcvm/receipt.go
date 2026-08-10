@@ -198,6 +198,12 @@ func verifyInstallReceipt(home string, state State, receipt InstallReceipt) erro
 		return fmt.Errorf("PCVM-E2005 RECEIPT_TAMPERED: receipt root hash is invalid")
 	}
 	for _, file := range receipt.Files {
+		// Receipt modes are serialized permission bits, not an os.FileMode. Reject
+		// type/special bits explicitly instead of relying on the comparison with
+		// the local filesystem to happen to catch them.
+		if file.Mode&^uint32(0o777) != 0 {
+			return fmt.Errorf("PCVM-E2005 RECEIPT_TAMPERED: invalid managed file mode")
+		}
 		if file.Path == "" || filepath.IsAbs(filepath.FromSlash(file.Path)) || strings.Contains(file.Path, "\\") {
 			return fmt.Errorf("PCVM-E2005 RECEIPT_TAMPERED: invalid managed path")
 		}

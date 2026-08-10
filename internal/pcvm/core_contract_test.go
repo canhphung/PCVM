@@ -146,7 +146,10 @@ func TestReceiptValidationFailureMatrix(t *testing.T) {
 			value.Files[0].Path = `.pcvm\\server.jar`
 			value.RootSHA256 = receiptRoot(value.Files)
 		},
-		"bad mode": func(value *InstallReceipt) { value.Files[0].Mode = 0o600; value.RootSHA256 = receiptRoot(value.Files) },
+		"bad mode": func(value *InstallReceipt) {
+			value.Files[0].Mode = 0o100600
+			value.RootSHA256 = receiptRoot(value.Files)
+		},
 		"bad digest": func(value *InstallReceipt) {
 			value.Files[0].SHA256 = strings.Repeat("0", 64)
 			value.RootSHA256 = receiptRoot(value.Files)

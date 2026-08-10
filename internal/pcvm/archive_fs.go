@@ -116,7 +116,7 @@ func archiveTarget(root, name string) (string, string, error) {
 	normalized := strings.ReplaceAll(name, "\\", "/")
 	clean := path.Clean(normalized)
 	native := filepath.FromSlash(clean)
-	if clean == "." || path.IsAbs(clean) || filepath.IsAbs(native) || filepath.VolumeName(native) != "" || clean == ".." || strings.HasPrefix(clean, "../") {
+	if clean == "." || path.IsAbs(clean) || filepath.IsAbs(native) || filepath.VolumeName(native) != "" || hasWindowsDrivePrefix(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", "", fmt.Errorf("unsafe archive path %q", name)
 	}
 	rootClean := filepath.Clean(root)
@@ -125,6 +125,18 @@ func archiveTarget(root, name string) (string, string, error) {
 		return "", "", fmt.Errorf("unsafe archive path %q", name)
 	}
 	return clean, target, nil
+}
+
+// hasWindowsDrivePrefix rejects both rooted (C:/path) and drive-relative
+// (C:path) Windows paths regardless of the host PCVM is running on. The
+// filepath package intentionally follows host semantics, so VolumeName cannot
+// identify these paths when an archive is inspected on Linux.
+func hasWindowsDrivePrefix(name string) bool {
+	if len(name) < 2 || name[1] != ':' {
+		return false
+	}
+	letter := name[0]
+	return letter >= 'A' && letter <= 'Z' || letter >= 'a' && letter <= 'z'
 }
 
 func secureMkdirAll(root, directory string, mode os.FileMode) error {
@@ -431,14 +443,18 @@ func stripArchiveComponents(name string, count int) (string, bool, error) {
 	if clean == "." {
 		return "", false, nil
 	}
-	if path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
+	if path.IsAbs(clean) || hasWindowsDrivePrefix(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", false, fmt.Errorf("unsafe archive path %q", name)
 	}
 	parts := strings.Split(clean, "/")
 	if len(parts) <= count {
 		return "", false, nil
 	}
-	return strings.Join(parts[count:], "/"), true, nil
+	stripped := strings.Join(parts[count:], "/")
+	if path.IsAbs(stripped) || hasWindowsDrivePrefix(stripped) || stripped == ".." || strings.HasPrefix(stripped, "../") {
+		return "", false, fmt.Errorf("unsafe archive path %q after stripping components", name)
+	}
+	return stripped, true, nil
 }
 
 func extractTarStreamSafe(reader *tar.Reader, destination string, options tarExtractOptions) error {
@@ -494,7 +510,7 @@ func extractTarStreamSafe(reader *tar.Reader, destination string, options tarExt
 			link := strings.ReplaceAll(header.Linkname, "\\", "/")
 			resolved := path.Clean(path.Join(path.Dir(clean), link))
 			nativeLink := filepath.FromSlash(link)
-			if path.IsAbs(link) || filepath.IsAbs(nativeLink) || filepath.VolumeName(nativeLink) != "" || resolved == ".." || strings.HasPrefix(resolved, "../") {
+			if path.IsAbs(link) || filepath.IsAbs(nativeLink) || filepath.VolumeName(nativeLink) != "" || hasWindowsDrivePrefix(link) || resolved == ".." || strings.HasPrefix(resolved, "../") {
 				return fmt.Errorf("archive symlink escapes extraction root: %q", header.Name)
 			}
 			if err := ensureArchiveDirectory(root, filepath.Dir(relative), 0o750); err != nil {

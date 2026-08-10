@@ -50,7 +50,7 @@ func TestSuccessfulZipExtractionPreservesUserBedrockConfig(t *testing.T) {
 }
 
 func TestArchivePathAndStripContracts(t *testing.T) {
-	for _, raw := range []string{"../escape", "/absolute", "C:\\absolute"} {
+	for _, raw := range []string{"../escape", "/absolute", "C:\\absolute", "C:/absolute", "C:drive-relative", `\\server\share\payload`} {
 		if _, _, err := archiveTarget(t.TempDir(), raw); err == nil {
 			t.Errorf("unsafe archive target %q accepted", raw)
 		}
@@ -72,6 +72,19 @@ func TestArchivePathAndStripContracts(t *testing.T) {
 	}
 	if _, _, err := stripArchiveComponents("../../escape", 1); err == nil {
 		t.Fatal("unsafe stripped path accepted")
+	}
+	for _, test := range []struct {
+		name  string
+		strip int
+	}{
+		{`C:\absolute`, 0},
+		{`C:drive-relative`, 0},
+		{`root/C:/absolute`, 1},
+		{`root/C:drive-relative`, 1},
+	} {
+		if _, _, err := stripArchiveComponents(test.name, test.strip); err == nil {
+			t.Errorf("unsafe archive path %q accepted after stripping %d components", test.name, test.strip)
+		}
 	}
 }
 
