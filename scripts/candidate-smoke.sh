@@ -30,7 +30,8 @@ trap cleanup EXIT
 wait_ready() {
   local attempts="$1"
   for _ in $(seq 1 "$attempts"); do
-    if docker logs "$name" 2>&1 | grep -Fq '[PCVM] READY'; then
+    docker logs "$name" > "$data/container.log" 2>&1
+    if grep -Fq '[PCVM] READY' "$data/container.log"; then
       return 0
     fi
     if [ "$(docker inspect -f '{{.State.Running}}' "$name")" != true ]; then
@@ -93,16 +94,27 @@ case "$kind" in
     docker stop --time 60 "$name" >/dev/null
     ;;
   vm)
+    vm_cpus=2
+    [ "$arch" != arm64 ] || vm_cpus=1
     "${base_run[@]}" -i --memory 3072m --cpus 2 \
       -e "SOFTWARE=$software" -e SOFTWARE_VERSION=3.24 -e SOFTWARE_BUILD=latest \
-      -e VM_DISK_GB=2 -e VM_MEMORY_MB=1536 -e VM_CPUS=2 "$image" >/dev/null
+      -e VM_DISK_GB=2 -e VM_MEMORY_MB=1536 -e "VM_CPUS=$vm_cpus" "$image" >/dev/null
     wait_ready 1200
     printf 'uname -m\nsudo -n id -u\n' > "$data/serial-input"
-    timeout 20 docker attach --sig-proxy=false "$name" < "$data/serial-input" > "$data/serial.log" 2>&1 || true
+    timeout --signal=TERM --kill-after=5s 20s \
+      docker attach --sig-proxy=false "$name" < "$data/serial-input" > "$data/serial.log" 2>&1 || true
     if [ "$arch" = arm64 ]; then machine=aarch64; else machine=x86_64; fi
-    grep -Fq "$machine" "$data/serial.log"
-    grep -Eq '^0\r?$' "$data/serial.log"
-    docker stop --time 110 "$name" >/dev/null
+    serial_ok=0
+    for _ in $(seq 1 10); do
+      docker logs "$name" > "$data/container.log" 2>&1
+      if grep -Fq "$machine" "$data/container.log" && grep -Eq '^0\r?$' "$data/container.log"; then
+        serial_ok=1
+        break
+      fi
+      sleep 1
+    done
+    test "$serial_ok" = 1
+    timeout --signal=TERM --kill-after=5s 120s docker stop --time 110 "$name" >/dev/null
     ;;
   *)
     echo "unsupported candidate smoke kind: $kind" >&2
