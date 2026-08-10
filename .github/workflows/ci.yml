@@ -316,6 +316,7 @@ jobs:
             docker network rm pcvm-web >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
+          log_file=/tmp/pcvm-web-${ARCH}.log
           for provider in nginx apache caddy; do
             docker rm -f pcvm-under-test >/dev/null 2>&1 || true
             docker volume rm -f pcvm-web-data >/dev/null 2>&1 || true
@@ -328,7 +329,8 @@ jobs:
               "pcvm:web-${ARCH}"
             ready=0
             for _ in $(seq 1 180); do
-              if docker logs pcvm-under-test 2>&1 | grep -Fq '[PCVM] READY'; then
+              docker logs pcvm-under-test >"$log_file" 2>&1
+              if grep -Fq '[PCVM] READY' "$log_file"; then
                 ready=1
                 break
               fi
@@ -357,7 +359,8 @@ jobs:
               sleep 1
             done
             test "$(docker inspect -f '{{.State.Running}}' pcvm-under-test)" = false
-            docker logs pcvm-under-test 2>&1 | grep -Fq 'resolves to blocked address'
+            docker logs pcvm-under-test >"$log_file" 2>&1
+            grep -Fq 'resolves to blocked address' "$log_file"
           done
       - name: Test cgroup memory budgets
         env:
@@ -369,6 +372,7 @@ jobs:
             docker volume rm -f pcvm-memory-budget >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
+          log_file=/tmp/pcvm-memory-budget-${ARCH}.log
           for limit in 512 96; do
             cleanup
             docker volume create pcvm-memory-budget >/dev/null
@@ -381,7 +385,8 @@ jobs:
               "pcvm:web-${ARCH}"
             ready=0
             for _ in $(seq 1 120); do
-              if docker logs pcvm-memory-budget 2>&1 | grep -Fq '[PCVM] READY'; then
+              docker logs pcvm-memory-budget >"$log_file" 2>&1
+              if grep -Fq '[PCVM] READY' "$log_file"; then
                 ready=1
                 break
               fi
@@ -392,9 +397,10 @@ jobs:
               sleep 1
             done
             test "$ready" = 1
-            docker logs pcvm-memory-budget 2>&1 | grep -Fq "[PCVM] MEMORY source=cgroup-v2 limit=${limit}MB target=${limit}MB reserve=0MB strategy=cgroup-only recommended=128MB"
+            docker logs pcvm-memory-budget >"$log_file" 2>&1
+            grep -Fq "[PCVM] MEMORY source=cgroup-v2 limit=${limit}MB target=${limit}MB reserve=0MB strategy=cgroup-only recommended=128MB" "$log_file"
             if [ "$limit" = 96 ]; then
-              docker logs pcvm-memory-budget 2>&1 | grep -Fq 'below the recommended 128 MB'
+              grep -Fq 'below the recommended 128 MB' "$log_file"
             fi
             docker stop --time 40 pcvm-memory-budget
           done
@@ -436,8 +442,9 @@ jobs:
             sleep 1
           done
           test "$stopped" = 1
-          docker logs pcvm-memory-oom 2>&1 | grep -Fq 'strategy=node-heap'
-          docker logs pcvm-memory-oom 2>&1 | grep -Fq 'OOM-killed by the container memory cgroup'
+          docker logs pcvm-memory-oom >/tmp/pcvm-memory-oom-${ARCH}.log 2>&1
+          grep -Fq 'strategy=node-heap' /tmp/pcvm-memory-oom-${ARCH}.log
+          grep -Fq 'OOM-killed by the container memory cgroup' /tmp/pcvm-memory-oom-${ARCH}.log
       - name: Build VM profile architecture image
         env:
           ARCH: ${{ matrix.arch }}
