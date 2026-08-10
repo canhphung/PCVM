@@ -528,7 +528,7 @@ systemctl restart "serial-getty@$console.service"
 systemctl enable --now pcvm-ready.service
 `
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
-	return fmt.Sprintf(`#cloud-config
+	return strings.TrimSpace(fmt.Sprintf(`#cloud-config
 hostname: %s
 manage_etc_hosts: true
 disable_root: true
@@ -562,7 +562,7 @@ write_files:
     content: %s
 runcmd:
   - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
-	`, hostname, encode(autologin), encode(autologin), encode(readyUnit), encode(ready), encode(firstBoot))
+	`, hostname, encode(autologin), encode(autologin), encode(readyUnit), encode(ready), encode(firstBoot))) + "\n"
 }
 
 func cloudInitUserDataForProvider(provider, hostname, arch string) string {
@@ -618,7 +618,7 @@ passwd -l root >/dev/null 2>&1 || true
 passwd -l alpine >/dev/null 2>&1 || true
 kill -HUP 1
 `
-	return fmt.Sprintf(`#cloud-config
+	return strings.TrimSpace(fmt.Sprintf(`#cloud-config
 hostname: %s
 manage_etc_hosts: true
 disable_root: true
@@ -656,7 +656,7 @@ write_files:
     content: %s
 runcmd:
   - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
-	`, hostname, encode(autologin), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))
+	`, hostname, encode(autologin), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))) + "\n"
 }
 
 func vmGuestReadyScript() string {

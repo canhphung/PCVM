@@ -129,7 +129,7 @@ func TestVMValidationAndCloudInit(t *testing.T) {
 	if strings.Contains(strings.ToLower(data), "password:") {
 		t.Fatal("cloud-init persisted a password")
 	}
-	if strings.Contains(data, "%!") {
+	if strings.Contains(data, "%!") || strings.Contains(data, "\t") {
 		t.Fatalf("invalid AMD64 cloud-init formatting: %s", data)
 	}
 	decodeFiles := func(config string) string {
@@ -182,6 +182,9 @@ func TestVMValidationAndCloudInit(t *testing.T) {
 
 func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 	data := alpineCloudInitUserData("tiny-vm", "arm64")
+	if strings.Contains(data, "\t") {
+		t.Fatalf("Alpine cloud-init contains a YAML-invalid tab: %q", data)
+	}
 	for _, want := range []string{"hostname: tiny-vm", "shell: /bin/ash", "/etc/doas.conf", "/etc/local.d/pcvm-ready.start", "/usr/local/sbin/pcvm-autologin", "/usr/local/bin/sudo"} {
 		if !strings.Contains(data, want) {
 			t.Fatalf("Alpine cloud-init missing %q: %s", want, data)
