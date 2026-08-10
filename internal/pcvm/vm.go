@@ -685,7 +685,10 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 			"-device", "virtio-blk-device,drive=osdisk,bootindex=1",
 			"-device", "virtio-scsi-device,id=scsi0",
 		)
-		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "max"}, args...)
+		// A bounded ARMv8 CPU avoids the large SVE/SME feature surface exposed by
+		// `max`, which is dramatically slower under pure TCG while remaining a
+		// compatible baseline for the supported AArch64 cloud images.
+		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "cortex-a72"}, args...)
 	}
 	args = append(args,
 		"-drive", "if=none,media=cdrom,readonly=on,file="+filepath.Join(vmDir, "seed.iso")+",format=raw,id=seed",

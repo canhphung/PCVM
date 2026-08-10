@@ -44,18 +44,27 @@ jobs:
         env:
           PROVIDER: ${{ inputs.provider }}
           VERSION: ${{ inputs.version }}
+          ARCH: ${{ inputs.architecture }}
         run: |
           set -euo pipefail
           disk_gb=8
           [ "$PROVIDER" != vm-alpine ] || disk_gb=2
+          ready_attempts=300
+          [ "$ARCH" != arm64 ] || ready_attempts=600
           docker volume create pcvm-vm-smoke >/dev/null
+          log_file=/tmp/pcvm-vm.log
+          log_pid=
           cleanup() {
             status=$?
             if [ "$status" -ne 0 ] && docker inspect pcvm-vm >/dev/null 2>&1; then
               echo '::group::VM container diagnostics'
               docker inspect pcvm-vm || true
-              docker logs pcvm-vm 2>&1 || true
+              cat "$log_file" 2>/dev/null || docker logs pcvm-vm 2>&1 || true
               echo '::endgroup::'
+            fi
+            if [ -n "$log_pid" ]; then
+              kill "$log_pid" >/dev/null 2>&1 || true
+              wait "$log_pid" 2>/dev/null || true
             fi
             docker rm -f pcvm-vm >/dev/null 2>&1 || true
             docker volume rm pcvm-vm-smoke >/dev/null 2>&1 || true
@@ -67,24 +76,26 @@ jobs:
             -v pcvm-vm-smoke:/home/container -e CLEAR_CONSOLE=0 -e SOFTWARE="$PROVIDER" \
             -e SOFTWARE_VERSION="$VERSION" -e SOFTWARE_BUILD=latest -e VM_DISK_GB="$disk_gb" \
             pcvm:full-vm-smoke >/dev/null
-          echo '[smoke] waiting up to 3 minutes for initial guest readiness'
-          for _ in $(seq 1 180); do
-            docker logs pcvm-vm 2>&1 | grep -Fq '[PCVM] READY' && break
+          docker logs --follow pcvm-vm > "$log_file" 2>&1 &
+          log_pid=$!
+          echo "[smoke] waiting up to ${ready_attempts}s for initial guest readiness"
+          for _ in $(seq 1 "$ready_attempts"); do
+            grep -Fq '[PCVM] READY' "$log_file" && break
             test "$(docker inspect -f '{{.State.Running}}' pcvm-vm)" = true
             sleep 1
           done
-          test "$(docker logs pcvm-vm 2>&1 | grep -Fc '[PCVM] READY')" -ge 1
+          test "$(grep -Fc '[PCVM] READY' "$log_file")" -ge 1
           echo '[smoke] guest ready; exercising the serial console'
           printf '%s\n' 'uname -a' 'sudo -n id -u' 'sudo -i -c "id -u"' 'sudo reboot' > /tmp/serial-input
           timeout 20 docker attach --sig-proxy=false pcvm-vm < /tmp/serial-input > /tmp/serial.log 2>&1 || true
           grep -Eq 'Linux .* (x86_64|aarch64)' /tmp/serial.log
           grep -Eq '^0\r?$' /tmp/serial.log
-          echo '[smoke] waiting up to 3 minutes for readiness after guest reboot'
-          for _ in $(seq 1 180); do
-            test "$(docker logs pcvm-vm 2>&1 | grep -Fc '[PCVM] READY')" -ge 2 && break
+          echo "[smoke] waiting up to ${ready_attempts}s for readiness after guest reboot"
+          for _ in $(seq 1 "$ready_attempts"); do
+            test "$(grep -Fc '[PCVM] READY' "$log_file")" -ge 2 && break
             test "$(docker inspect -f '{{.State.Running}}' pcvm-vm)" = true
             sleep 1
           done
-          test "$(docker logs pcvm-vm 2>&1 | grep -Fc '[PCVM] READY')" -ge 2
+          test "$(grep -Fc '[PCVM] READY' "$log_file")" -ge 2
           docker stop --time 110 pcvm-vm
           test "$(docker inspect -f '{{.State.Running}}' pcvm-vm)" = false
