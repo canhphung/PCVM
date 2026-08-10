@@ -764,12 +764,13 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		)
 		args = append([]string{"-machine", "q35", "-cpu", "max"}, args...)
 	} else {
-		// ARM virt provides a PCIe host and its PCI virtio path remains reliable
-		// with SMP under Debian's QEMU 7.2 TCG. Disable optional device ROMs
-		// explicitly because the lightweight VM image does not ship efi-virtio.rom.
+		// ARM virt exposes native virtio-MMIO transports. They avoid PCI/ACPI
+		// emulation overhead under pure TCG and do not require EFI option ROMs.
+		// Automatic ARM guests are deliberately single-vCPU, avoiding the QEMU
+		// 7.2 SMP issue that originally motivated the PCI transport experiment.
 		args = append(args,
-			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
-			"-device", "virtio-scsi-pci,id=scsi0,romfile=",
+			"-device", "virtio-blk-device,drive=osdisk,bootindex=1",
+			"-device", "virtio-scsi-device,id=scsi0",
 		)
 		// A bounded ARMv8 CPU avoids the large SVE/SME feature surface exposed by
 		// `max`, which is dramatically slower under pure TCG while remaining a
@@ -785,9 +786,9 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		args = append(args, "-device", "virtio-net-pci,netdev=net0")
 	} else {
 		args = append(args,
-			"-device", "virtio-net-pci,netdev=net0,romfile=",
+			"-device", "virtio-net-device,netdev=net0",
 			"-object", "rng-random,filename=/dev/urandom,id=rng0",
-			"-device", "virtio-rng-pci,rng=rng0,romfile=",
+			"-device", "virtio-rng-device,rng=rng0",
 		)
 	}
 	return args

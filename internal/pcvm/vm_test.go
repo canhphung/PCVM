@@ -276,24 +276,24 @@ func TestQEMUArgumentsCannotBeOverriddenByUserInput(t *testing.T) {
 	}
 }
 
-func TestQEMUArgumentsUseROMlessVirtioPCIOnARM64(t *testing.T) {
+func TestQEMUArgumentsUseVirtioMMIOOnARM64(t *testing.T) {
 	cfg := Config{Home: "/home/container", Arch: "arm64"}
 	joined := strings.Join(qemuArguments(cfg, vmResources{MemoryMB: 1024, CPUs: 2}, "/usr/share/AAVMF/AAVMF_CODE.fd", "/home/container/vm/qmp.sock"), " ")
 	for _, required := range []string{
 		"virt,gic-version=max",
 		"-cpu cortex-a72",
-		"virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
-		"virtio-scsi-pci,id=scsi0,romfile=",
-		"virtio-net-pci,netdev=net0,romfile=",
+		"virtio-blk-device,drive=osdisk,bootindex=1",
+		"virtio-scsi-device,id=scsi0",
+		"virtio-net-device,netdev=net0",
 		"rng-random,filename=/dev/urandom,id=rng0",
-		"virtio-rng-pci,rng=rng0,romfile=",
+		"virtio-rng-device,rng=rng0",
 		"scsi-cd,drive=seed,bus=scsi0.0,bootindex=99",
 	} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("ARM64 QEMU argv missing %q: %s", required, joined)
 		}
 	}
-	for _, forbidden := range []string{"-cpu max", "efi-virtio.rom", "virtio-blk-device", "virtio-scsi-device", "virtio-net-device"} {
+	for _, forbidden := range []string{"-cpu max", "efi-virtio.rom", "virtio-blk-pci", "virtio-scsi-pci", "virtio-net-pci", "virtio-rng-pci"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("ARM64 QEMU argv contains an unsupported device/ROM setting %q: %s", forbidden, joined)
 		}
