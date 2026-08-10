@@ -707,10 +707,11 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
 			"-device", "virtio-scsi-pci,id=scsi0,romfile=",
 		)
-		// A bounded ARMv8 CPU avoids the large SVE/SME feature surface exposed by
-		// `max`, which is dramatically slower under pure TCG while remaining a
-		// compatible baseline for the supported AArch64 cloud images.
-		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "cortex-a72"}, args...)
+		// Use QEMU's complete TCG CPU model so current AArch64 cloud-image
+		// userspace cannot select instructions absent from an older named core.
+		// SVE is not needed by the supported server images and disabling it keeps
+		// the emulation surface bounded on Debian bookworm's QEMU 7.2.
+		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "max,sve=off"}, args...)
 	}
 	args = append(args,
 		"-drive", "if=none,media=cdrom,readonly=on,file="+filepath.Join(vmDir, "seed.iso")+",format=raw,id=seed",
