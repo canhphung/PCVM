@@ -91,7 +91,8 @@ jobs:
           test "$(grep -Fc '[PCVM] READY' "$log_file")" -ge 1
           echo '[smoke] guest ready; exercising the serial console'
           printf '%s\n' 'uname -a' 'sudo -n id -u' 'sudo -i -c "id -u"' 'sudo reboot' > /tmp/serial-input
-          timeout 20 docker attach --sig-proxy=false pcvm-vm < /tmp/serial-input > /tmp/serial.log 2>&1 || true
+          timeout --signal=TERM --kill-after=5s 20s \
+            docker attach --sig-proxy=false pcvm-vm < /tmp/serial-input > /tmp/serial.log 2>&1 || true
           grep -Eq 'Linux .* (x86_64|aarch64)' /tmp/serial.log
           grep -Eq '^0\r?$' /tmp/serial.log
           echo "[smoke] waiting up to ${ready_attempts}s for readiness after guest reboot"
@@ -101,5 +102,5 @@ jobs:
             sleep 1
           done
           test "$(grep -Fc '[PCVM] READY' "$log_file")" -ge 2
-          docker stop --time 110 pcvm-vm
+          timeout --signal=TERM --kill-after=5s 120s docker stop --time 110 pcvm-vm
           test "$(docker inspect -f '{{.State.Running}}' pcvm-vm)" = false
