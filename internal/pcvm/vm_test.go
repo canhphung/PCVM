@@ -168,6 +168,9 @@ func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 			t.Fatalf("Alpine cloud-init missing encoded %q", script)
 		}
 	}
+	if ready, reload := strings.Index(decoded.String(), "/usr/local/sbin/pcvm-ready\n"), strings.Index(decoded.String(), "kill -HUP 1\n"); ready < 0 || reload < 0 || ready > reload {
+		t.Fatal("Alpine first boot must announce readiness before reloading OpenRC init")
+	}
 	if strings.Contains(data, "packages:") || strings.Contains(strings.ToLower(data), "password:") {
 		t.Fatal("Alpine provisioning downloads packages or persists a password")
 	}

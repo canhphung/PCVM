@@ -576,8 +576,8 @@ fi
 rc-update add local default
 passwd -l root >/dev/null 2>&1 || true
 passwd -l alpine >/dev/null 2>&1 || true
-kill -HUP 1
 /usr/local/sbin/pcvm-ready
+kill -HUP 1
 `, console)
 	return fmt.Sprintf(`#cloud-config
 hostname: %s
