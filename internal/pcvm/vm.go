@@ -489,26 +489,43 @@ func createNoCloudSeed(ctx context.Context, stageDir, output, provider, hostname
 }
 
 func cloudInitUserData(hostname, arch string) string {
-	console := "ttyS0"
-	if arch == "arm64" {
-		console = "ttyAMA0"
-	}
+	_ = arch // the guest selects whichever serial device firmware made active
 	autologin := `[Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin pcvm --noclear %I $TERM
 `
+	ready := vmGuestReadyScript()
 	readyUnit := `[Unit]
 Description=PCVM guest readiness marker
-After=network-online.target serial-getty@%s.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'echo "[PCVM-GUEST] READY" > /dev/%s'
+ExecStart=/usr/local/sbin/pcvm-ready
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
+`
+	firstBoot := `#!/bin/sh
+set -eu
+active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
+console=
+for candidate in $active_consoles ttyAMA0 ttyS0; do
+    case "$candidate" in
+        ttyAMA0|ttyS0)
+            if [ -c "/dev/$candidate" ]; then
+                console="$candidate"
+                break
+            fi
+            ;;
+    esac
+done
+[ -n "$console" ]
+systemctl daemon-reload
+systemctl restart "serial-getty@$console.service"
+systemctl enable --now pcvm-ready.service
 `
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
 	return fmt.Sprintf(`#cloud-config
@@ -535,11 +552,17 @@ write_files:
     permissions: '0644'
     encoding: b64
     content: %s
+  - path: /usr/local/sbin/pcvm-ready
+    permissions: '0755'
+    encoding: b64
+    content: %s
+  - path: /usr/local/sbin/pcvm-firstboot
+    permissions: '0755'
+    encoding: b64
+    content: %s
 runcmd:
-  - [systemctl, daemon-reload]
-  - [systemctl, restart, serial-getty@%s.service]
-  - [systemctl, enable, --now, pcvm-ready.service]
-	`, hostname, encode(autologin), encode(autologin), encode(fmt.Sprintf(readyUnit, console, console)), console)
+  - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
+	`, hostname, encode(autologin), encode(autologin), encode(readyUnit), encode(ready), encode(firstBoot))
 }
 
 func cloudInitUserDataForProvider(provider, hostname, arch string) string {
@@ -550,10 +573,7 @@ func cloudInitUserDataForProvider(provider, hostname, arch string) string {
 }
 
 func alpineCloudInitUserData(hostname, arch string) string {
-	console := "ttyS0"
-	if arch == "arm64" {
-		console = "ttyAMA0"
-	}
+	_ = arch // the guest selects whichever serial device firmware made active
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
 	autologin := "#!/bin/sh\n/usr/local/sbin/pcvm-ready\nexec /bin/login -f pcvm\n"
 	sudoCompat := `#!/bin/sh
@@ -567,25 +587,37 @@ if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
 fi
 exec /usr/bin/doas "$@"
 `
-	ready := fmt.Sprintf("#!/bin/sh\nif mkdir /run/pcvm-ready.once 2>/dev/null; then\n    echo \"[PCVM-GUEST] READY\" > /dev/%s\nfi\n", console)
-	firstBoot := fmt.Sprintf(`#!/bin/sh
+	ready := vmGuestReadyScript()
+	firstBoot := `#!/bin/sh
 set -eu
-console=%s
+active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
+console=
+for candidate in $active_consoles ttyAMA0 ttyS0; do
+    case "$candidate" in
+        ttyAMA0|ttyS0)
+            if [ -c "/dev/$candidate" ]; then
+                console="$candidate"
+                break
+            fi
+            ;;
+    esac
+done
+[ -n "$console" ]
 mkdir -p /etc/doas.d
 rm -f /etc/doas.conf /etc/doas.d/*.conf
-printf '%%s\n' 'permit nopass pcvm as root' > /etc/doas.conf
+printf '%s\n' 'permit nopass pcvm as root' > /etc/doas.conf
 chmod 0400 /etc/doas.conf
 line="$console::respawn:/sbin/getty -n -l /usr/local/sbin/pcvm-autologin -L $console 115200 vt100"
 if grep -q "^$console::" /etc/inittab; then
     sed -i "\\|^$console::|c\\$line" /etc/inittab
 else
-    printf '%%s\n' "$line" >> /etc/inittab
+    printf '%s\n' "$line" >> /etc/inittab
 fi
 rc-update add local default
 passwd -l root >/dev/null 2>&1 || true
 passwd -l alpine >/dev/null 2>&1 || true
 kill -HUP 1
-`, console)
+`
 	return fmt.Sprintf(`#cloud-config
 hostname: %s
 manage_etc_hosts: true
@@ -624,7 +656,33 @@ write_files:
     content: %s
 runcmd:
   - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
-`, hostname, encode(autologin), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))
+	`, hostname, encode(autologin), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))
+}
+
+func vmGuestReadyScript() string {
+	return `#!/bin/sh
+active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
+console=
+for candidate in $active_consoles ttyAMA0 ttyS0; do
+    case "$candidate" in
+        ttyAMA0|ttyS0)
+            if [ -c "/dev/$candidate" ]; then
+                console="$candidate"
+                break
+            fi
+            ;;
+    esac
+done
+[ -n "$console" ] || exit 1
+if mkdir /run/pcvm-ready.once 2>/dev/null; then
+    if printf '%s\n' '[PCVM-GUEST] READY' > "/dev/$console"; then
+        exit 0
+    fi
+    rmdir /run/pcvm-ready.once 2>/dev/null || true
+    exit 1
+fi
+exit 0
+`
 }
 
 func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory MemoryPlan) (ProcessSpec, error) {
@@ -707,11 +765,10 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
 			"-device", "virtio-scsi-pci,id=scsi0,romfile=",
 		)
-		// Use QEMU's complete TCG CPU model so current AArch64 cloud-image
-		// userspace cannot select instructions absent from an older named core.
-		// SVE is not needed by the supported server images and disabling it keeps
-		// the emulation surface bounded on Debian bookworm's QEMU 7.2.
-		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "max,sve=off"}, args...)
+		// A bounded ARMv8 CPU avoids the large SVE/SME feature surface exposed by
+		// `max`, which is dramatically slower under pure TCG while remaining a
+		// compatible baseline for the supported AArch64 cloud images.
+		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "cortex-a72"}, args...)
 	}
 	args = append(args,
 		"-drive", "if=none,media=cdrom,readonly=on,file="+filepath.Join(vmDir, "seed.iso")+",format=raw,id=seed",
