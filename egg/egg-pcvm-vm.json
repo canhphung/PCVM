@@ -112,7 +112,7 @@
     },
     {
       "name": "VM CPUs",
-      "description": "Guest vCPU count from 1 to 8, or auto. Cannot exceed the cgroup quota or host policy.",
+      "description": "Guest vCPU count from 1 to 8, or auto. Auto uses up to 2 vCPUs on AMD64 and 1 on ARM64; explicit values cannot exceed the cgroup quota or host policy.",
       "env_variable": "VM_CPUS",
       "default_value": "auto",
       "user_viewable": true,

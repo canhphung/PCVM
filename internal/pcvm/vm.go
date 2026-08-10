@@ -624,6 +624,7 @@ func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory M
 	if err != nil {
 		return ProcessSpec{}, err
 	}
+	resources = stabilizeARMTCGResources(cfg.Arch, cfg.Request, resources)
 	vmDir := filepath.Join(cfg.Home, "vm")
 	if err := validateVMFiles(vmDir); err != nil {
 		return ProcessSpec{}, err
@@ -661,6 +662,18 @@ func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory M
 		Readiness: ReadinessSpec{Mode: "regex", Patterns: []string{`\[PCVM-GUEST\] READY`}},
 		Control:   ControlSpec{Mode: "qmp", SocketPath: qmp}, RawOutput: true, RepeatReadiness: true,
 		ReadyTimeout: 15 * time.Minute, StopTimeout: 90 * time.Second}, nil
+}
+
+func stabilizeARMTCGResources(arch string, req Request, resources vmResources) vmResources {
+	// Debian bookworm ships QEMU 7.2. Its multi-vCPU AArch64 TCG path can
+	// deadlock current Alpine kernels during early userspace mounts. Keep the
+	// safe automatic default at one vCPU on ARM64 while preserving an explicit
+	// administrator/user VM_CPUS choice. AMD64 remains capped at two by the
+	// normal resource planner.
+	if arch == "arm64" && (req.VMCPUs == "" || req.VMCPUs == "auto") && resources.CPUs > 1 {
+		resources.CPUs = 1
+	}
+	return resources
 }
 
 func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string {

@@ -99,6 +99,21 @@ func TestVMResourceCalculation(t *testing.T) {
 	}
 }
 
+func TestARM64AutoCPUUsesStableSingleVCPU(t *testing.T) {
+	auto := stabilizeARMTCGResources("arm64", Request{VMCPUs: "auto"}, vmResources{MemoryMB: 2048, CPUs: 2})
+	if auto.CPUs != 1 {
+		t.Fatalf("ARM64 automatic resources use %d CPUs, want 1", auto.CPUs)
+	}
+	manual := stabilizeARMTCGResources("arm64", Request{VMCPUs: "2"}, vmResources{MemoryMB: 2048, CPUs: 2})
+	if manual.CPUs != 2 {
+		t.Fatalf("ARM64 manual CPU choice was changed to %d", manual.CPUs)
+	}
+	amd64 := stabilizeARMTCGResources("amd64", Request{VMCPUs: "auto"}, vmResources{MemoryMB: 2048, CPUs: 2})
+	if amd64.CPUs != 2 {
+		t.Fatalf("AMD64 automatic resources were changed to %d", amd64.CPUs)
+	}
+}
+
 func TestVMValidationAndCloudInit(t *testing.T) {
 	spec := ProviderSpec{ID: "vm-ubuntu", MinimumDisk: 8192}
 	cfg := Config{Arch: "amd64", Request: Request{Architecture: "amd64", VMMemoryMB: "auto", VMCPUs: "auto", VMDiskGB: 10, VMHostname: "lab-vm"}, Policy: vmTestPolicy()}
