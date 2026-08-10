@@ -56,15 +56,20 @@ base_run=(
 case "$kind" in
   minecraft)
     printf 'eula=true\n' > "$data/eula.txt"
+    software_version=latest
+    if [ "$software" = modrinth-modpack ]; then
+      # Pin an immutable, server-tested project version. Modrinth's moving
+      # latest for this project has previously shipped internally inconsistent
+      # loader constraints, which should fail the pack rather than make the
+      # PCVM release gate nondeterministic.
+      software_version=EKFz1gv5
+    fi
     minecraft_env=(
-      -e "SOFTWARE=$software" -e SOFTWARE_VERSION=latest -e SOFTWARE_BUILD=latest
+      -e "SOFTWARE=$software" -e SOFTWARE_VERSION="$software_version" -e SOFTWARE_BUILD=latest
       -e SERVER_PORT=25565 -e SERVER_MEMORY=3072M
     )
     if [ "$software" = modrinth-modpack ]; then
-      minecraft_env+=(
-        -e MODPACK_MODE=project
-        -e MODPACK_PROJECT=sfs
-      )
+      minecraft_env+=(-e MODPACK_MODE=project -e MODPACK_PROJECT=sfs)
     fi
     "${base_run[@]}" --memory 4g --cpus 2 "${minecraft_env[@]}" "$image" >/dev/null
     wait_ready 1200

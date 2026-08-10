@@ -2560,17 +2560,18 @@
                                                              "ServerPlugins"
                                                          ],
                                                "managed_paths":  [
-                                                                     "TShock.Server.dll",
-                                                                     "TShock.Server.deps.json",
-                                                                     "TShock.Server.runtimeconfig.json",
-                                                                     "bin"
+                                                                     "TShock.Server",
+                                                                     "TShock.Installer",
+                                                                     "GeoIP.dat",
+                                                                     "bin",
+                                                                     "i18n"
                                                                  ]
                                            },
                           "options":  {
                                           "repository":  "Pryaxis/TShock",
                                           "asset_regex_amd64":  "(?i)-linux-x64-Release\\.zip$",
                                           "asset_regex_arm64":  "(?i)-linux-arm64-Release\\.zip$",
-                                          "executable":  "TShock.Server.dll"
+                                          "executable":  "TShock.Server"
                                       },
                           "capabilities":  [
                                                "games"

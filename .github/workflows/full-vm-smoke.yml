@@ -49,7 +49,18 @@ jobs:
           disk_gb=8
           [ "$PROVIDER" != vm-alpine ] || disk_gb=2
           docker volume create pcvm-vm-smoke >/dev/null
-          cleanup() { docker rm -f pcvm-vm >/dev/null 2>&1 || true; docker volume rm pcvm-vm-smoke >/dev/null 2>&1 || true; }
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ] && docker inspect pcvm-vm >/dev/null 2>&1; then
+              echo '::group::VM container diagnostics'
+              docker inspect pcvm-vm || true
+              docker logs pcvm-vm 2>&1 || true
+              echo '::endgroup::'
+            fi
+            docker rm -f pcvm-vm >/dev/null 2>&1 || true
+            docker volume rm pcvm-vm-smoke >/dev/null 2>&1 || true
+            return "$status"
+          }
           trap cleanup EXIT
           docker run -d -i --name pcvm-vm --memory 3072m --cpus 2 --read-only \
             --security-opt no-new-privileges --cap-drop ALL --tmpfs /tmp:rw,nosuid,nodev,size=256m \

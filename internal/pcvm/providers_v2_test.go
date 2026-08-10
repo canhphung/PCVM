@@ -307,8 +307,8 @@ func TestTShockTarExtractionRejectsLinks(t *testing.T) {
 func TestTShockInstallUsesPinnedDotnetRuntime(t *testing.T) {
 	var tarBody bytes.Buffer
 	tarWriter := tar.NewWriter(&tarBody)
-	assembly := []byte("managed TShock assembly")
-	if err := tarWriter.WriteHeader(&tar.Header{Name: "TShock.Server.dll", Mode: 0o644, Size: int64(len(assembly)), Typeflag: tar.TypeReg}); err != nil {
+	assembly := []byte("managed TShock apphost")
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "TShock.Server", Mode: 0o755, Size: int64(len(assembly)), Typeflag: tar.TypeReg}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tarWriter.Write(assembly); err != nil {
@@ -347,7 +347,10 @@ func TestTShockInstallUsesPinnedDotnetRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resolved.Command) != 2 || resolved.Command[0] != runtime || filepath.Base(resolved.Command[1]) != "TShock.Server.dll" {
+	if len(resolved.Command) != 1 || filepath.Base(resolved.Command[0]) != "TShock.Server" {
 		t.Fatalf("TShock command is not bound to the pinned runtime and assembly: %v", resolved.Command)
+	}
+	if !contains(resolved.Environment, "DOTNET_ROOT="+filepath.Dir(runtime)) || !contains(resolved.Environment, "DOTNET_MULTILEVEL_LOOKUP=0") {
+		t.Fatalf("TShock environment is not bound to the pinned runtime: %v", resolved.Environment)
 	}
 }

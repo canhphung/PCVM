@@ -117,7 +117,11 @@ func (a *App) rebuildLaunchState(ctx context.Context, spec ProviderSpec, state S
 		launch.Command = []string{runtimePath, filepath.Join(launch.WorkingDirectory, filepath.FromSlash(spec.Options.Executable))}
 	case "tshock":
 		launch.WorkingDirectory = filepath.Join(managed, version)
-		launch.Command = []string{runtimePath, filepath.Join(launch.WorkingDirectory, filepath.FromSlash(spec.Options.Executable))}
+		launch.Command = []string{filepath.Join(launch.WorkingDirectory, filepath.FromSlash(spec.Options.Executable))}
+		launch.Environment = []string{
+			"DOTNET_ROOT=" + filepath.Dir(runtimePath),
+			"DOTNET_MULTILEVEL_LOOKUP=0",
+		}
 	case "endstone":
 		launch.WorkingDirectory = filepath.Join(managed, version)
 		launch.Command = []string{runtimePath, "-m", "endstone", "--server-folder", a.Config.Home, "--yes", "--remote", "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/v2"}

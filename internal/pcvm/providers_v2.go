@@ -441,11 +441,25 @@ func (p *catalogProvider) installTShock(ic InstallContext, resolved Resolved) (R
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return resolved, fmt.Errorf("TShock managed assembly must be a regular non-symlink file")
 	}
+	// Archive modes are not represented consistently on Windows development
+	// hosts. Set a known executable mode after the no-symlink regular-file
+	// check; Linux containers will then execute the apphost directly.
+	if err := os.Chmod(entry, 0o750); err != nil {
+		return resolved, fmt.Errorf("make TShock managed apphost executable: %w", err)
+	}
 	if err := linkMutableData(ic.Home, root, []string{"world", "tshock", "ServerPlugins"}, nil); err != nil {
 		return resolved, err
 	}
 	resolved.WorkDir = root
-	resolved.Command = []string{ic.Runtime, entry}
+	// TShock 6 is published as a framework-dependent single-file apphost, not
+	// as TShock.Server.dll. Execute that sealed apphost directly and bind it to
+	// the runtime pack selected by PCVM. This keeps host-installed runtimes out
+	// of resolution and works for both x64 and arm64 release assets.
+	resolved.Command = []string{entry}
+	resolved.Environment = append(resolved.Environment,
+		"DOTNET_ROOT="+filepath.Dir(ic.Runtime),
+		"DOTNET_MULTILEVEL_LOOKUP=0",
+	)
 	complete = true
 	return resolved, nil
 }
