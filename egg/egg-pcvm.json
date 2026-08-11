@@ -7,12 +7,12 @@
   "exported_at": "2026-08-09T00:00:00+07:00",
   "name": "PCVM Universal",
   "author": "canhphung@users.noreply.github.com",
-  "description": "PCVM v2.0.0 Universal Egg: 53 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
+  "description": "PCVM v2.0.1 Universal Egg: 53 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
   "features": [
     "eula"
   ],
   "docker_images": {
-    "PCVM 2.0.0 - Universal (53 providers)": "ghcr.io/canhphung/pcvm:2.0.0"
+    "PCVM 2.0.1 - Universal (53 providers)": "ghcr.io/canhphung/pcvm:2.0.1"
   },
   "file_denylist": [
     ".pcvm"

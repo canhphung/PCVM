@@ -15,16 +15,17 @@ import (
 )
 
 type App struct {
-	Config     Config
-	Catalog    Catalog
-	HTTP       *HTTPClient
-	Log        *Logger
-	In         io.Reader
-	Out        io.Writer
-	Err        io.Writer
-	Now        func() time.Time
-	ResetRoot  string
-	Supervisor Supervisor
+	Config      Config
+	Catalog     Catalog
+	HTTP        *HTTPClient
+	Log         *Logger
+	In          io.Reader
+	Out         io.Writer
+	Err         io.Writer
+	Now         func() time.Time
+	MenuTimeout time.Duration
+	ResetRoot   string
+	Supervisor  Supervisor
 }
 
 func NewApp(cfg Config, catalog Catalog, in io.Reader, out, errOut io.Writer) *App {
@@ -32,7 +33,7 @@ func NewApp(cfg Config, catalog Catalog, in io.Reader, out, errOut io.Writer) *A
 	log := NewLogger(out)
 	httpClient := NewHTTPClient()
 	httpClient.Log = log
-	return &App{Config: cfg, Catalog: catalog, HTTP: httpClient, Log: log, In: in, Out: out, Err: errOut, Now: time.Now, ResetRoot: "/home/container", Supervisor: ProcessSupervisor{Log: log}}
+	return &App{Config: cfg, Catalog: catalog, HTTP: httpClient, Log: log, In: in, Out: out, Err: errOut, Now: time.Now, MenuTimeout: defaultMenuSelectionTimeout, ResetRoot: "/home/container", Supervisor: ProcessSupervisor{Log: log}}
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -107,8 +108,12 @@ func (a *App) Run(ctx context.Context) error {
 		if state != nil {
 			req.Software = state.Provider
 		} else {
-			chosen, err := a.menu()
+			chosen, err := a.menuContext(ctx)
 			if err != nil {
+				if errors.Is(err, errMenuSelectionTimeout) {
+					a.Log.Printf("No software was selected within %s; shutting down cleanly", formatMenuTimeout(a.menuSelectionTimeout()))
+					return nil
+				}
 				return err
 			}
 			req.Software = chosen

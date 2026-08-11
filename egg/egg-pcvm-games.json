@@ -7,10 +7,10 @@
   "exported_at": "2026-08-09T00:00:00+07:00",
   "name": "PCVM Games",
   "author": "canhphung@users.noreply.github.com",
-  "description": "PCVM v2.0.0 Games Egg: 18 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
+  "description": "PCVM v2.0.1 Games Egg: 18 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
   "features": [],
   "docker_images": {
-    "PCVM 2.0.0 - Games (18 providers)": "ghcr.io/canhphung/pcvm:2.0.0-games"
+    "PCVM 2.0.1 - Games (18 providers)": "ghcr.io/canhphung/pcvm:2.0.1-games"
   },
   "file_denylist": [
     ".pcvm"

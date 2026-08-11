@@ -257,7 +257,8 @@ func TestStateAndReceiptStrictValidationMatrix(t *testing.T) {
 }
 
 func TestLoadCatalogRuntimeManifestEnvelopeMatrix(t *testing.T) {
-	if _, err := LoadCatalog(nil); err != nil {
+	embedded, err := LoadCatalog(nil)
+	if err != nil {
 		t.Fatalf("embedded catalog rejected: %v", err)
 	}
 	pack := RuntimePackSpec{
@@ -265,7 +266,7 @@ func TestLoadCatalogRuntimeManifestEnvelopeMatrix(t *testing.T) {
 		URL: "https://example.com/java.tar.gz", SHA256: strings.Repeat("a", 64), TreeSHA256: strings.Repeat("b", 64),
 		Executable: "bin/java", Archive: "tar.gz", Size: 1,
 	}
-	valid := RuntimeManifest{Schema: RuntimeManifestSchema, Release: "2.0.0", Compatibility: "pcvm>=2.0.0", Packs: []RuntimePackSpec{pack}}
+	valid := RuntimeManifest{Schema: RuntimeManifestSchema, Release: embedded.Version, Compatibility: "pcvm>=2.0.0", Packs: []RuntimePackSpec{pack}}
 	encode := func(value RuntimeManifest) []byte {
 		data, err := json.Marshal(value)
 		if err != nil {
@@ -278,7 +279,7 @@ func TestLoadCatalogRuntimeManifestEnvelopeMatrix(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*RuntimeManifest){
 		"schema":           func(value *RuntimeManifest) { value.Schema++ },
-		"release":          func(value *RuntimeManifest) { value.Release = "2.0.1" },
+		"release":          func(value *RuntimeManifest) { value.Release = "0.0.0" },
 		"compatibility":    func(value *RuntimeManifest) { value.Compatibility = "any" },
 		"pack":             func(value *RuntimeManifest) { value.Packs[0].TreeSHA256 = "" },
 		"upstream-empty":   func(value *RuntimeManifest) { value.Packs[0].UpstreamVersion = "" },

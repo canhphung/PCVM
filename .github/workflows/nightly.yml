@@ -26,7 +26,7 @@ jobs:
         run: |
           go run ./cmd/runtime-manifest -out /tmp/runtime-manifest.json
           jq -e '
-            .schema == 1 and .release == "2.0.0" and .compatibility == "pcvm>=2.0.0"
+            .schema == 1 and .release == "2.0.1" and .compatibility == "pcvm>=2.0.0"
             and (.packs | length) == 38
             and all(.packs[];
               (.id | length) > 0

@@ -7,12 +7,12 @@
   "exported_at": "2026-08-09T00:00:00+07:00",
   "name": "PCVM Minecraft",
   "author": "canhphung@users.noreply.github.com",
-  "description": "PCVM v2.0.0 Minecraft Egg: 19 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
+  "description": "PCVM v2.0.1 Minecraft Egg: 19 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
   "features": [
     "eula"
   ],
   "docker_images": {
-    "PCVM 2.0.0 - Minecraft (19 providers)": "ghcr.io/canhphung/pcvm:2.0.0-minecraft"
+    "PCVM 2.0.1 - Minecraft (19 providers)": "ghcr.io/canhphung/pcvm:2.0.1-minecraft"
   },
   "file_denylist": [
     ".pcvm"

@@ -2,12 +2,14 @@ package pcvm
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const pcvmFiglet = `    ____  _______    ____  ___
@@ -15,6 +17,12 @@ const pcvmFiglet = `    ____  _______    ____  ___
   / /_/ / /    | | / / /|_/ /
  / ____/ /___  | |/ / /  / /
 /_/    \____/  |___/_/  /_/`
+
+const menuFrameInnerWidth = 58
+
+const defaultMenuSelectionTimeout = 5 * time.Minute
+
+var errMenuSelectionTimeout = errors.New("software selection timed out")
 
 type menuCategory struct {
 	ID          string
@@ -50,6 +58,10 @@ type menuNode struct {
 }
 
 func (a *App) menu() (string, error) {
+	return a.menuContext(context.Background())
+}
+
+func (a *App) menuContext(ctx context.Context) (string, error) {
 	available := a.Catalog.Available(a.Config.Arch, a.Config.Policy.AllowedSoftware)
 	filtered := available[:0]
 	for _, provider := range available {
@@ -63,7 +75,28 @@ func (a *App) menu() (string, error) {
 	root := buildMenuTree(filtered)
 	reader := bufio.NewReader(a.In)
 	a.renderMenuHeader()
-	return a.selectMenuNode(reader, root, true)
+	fmt.Fprintf(a.Out, "%sNo selection: server shuts down after %s.%s\n", menuDim(), formatMenuTimeout(a.menuSelectionTimeout()), menuReset())
+	menuCtx, cancel := context.WithTimeoutCause(ctx, a.menuSelectionTimeout(), errMenuSelectionTimeout)
+	defer cancel()
+	return a.selectMenuNode(menuCtx, reader, root, true)
+}
+
+func (a *App) menuSelectionTimeout() time.Duration {
+	if a.MenuTimeout > 0 {
+		return a.MenuTimeout
+	}
+	return defaultMenuSelectionTimeout
+}
+
+func formatMenuTimeout(timeout time.Duration) string {
+	if timeout > 0 && timeout%time.Minute == 0 {
+		minutes := int(timeout / time.Minute)
+		if minutes == 1 {
+			return "1 minute"
+		}
+		return fmt.Sprintf("%d minutes", minutes)
+	}
+	return timeout.String()
 }
 
 func buildMenuTree(providers []ProviderSpec) *menuNode {
@@ -84,14 +117,14 @@ func buildMenuTree(providers []ProviderSpec) *menuNode {
 	return root
 }
 
-func (a *App) selectMenuNode(reader *bufio.Reader, node *menuNode, root bool) (string, error) {
+func (a *App) selectMenuNode(ctx context.Context, reader *bufio.Reader, node *menuNode, root bool) (string, error) {
 	if len(node.Children) == 0 {
-		return a.selectProvider(reader, node)
+		return a.selectProvider(ctx, reader, node)
 	}
 	for {
 		children := orderedMenuChildren(node)
 		a.renderCategoryMenu(node, children, root)
-		choice, err := readMenuChoice(reader)
+		choice, err := readMenuChoice(ctx, reader)
 		if err != nil {
 			return "", err
 		}
@@ -106,7 +139,7 @@ func (a *App) selectMenuNode(reader *bufio.Reader, node *menuNode, root bool) (s
 			a.menuWarning("Choose a category number from 1 to %d, %s.", len(children), menuChoiceHelp(root))
 			continue
 		}
-		selected, selectErr := a.selectMenuNode(reader, children[index-1], false)
+		selected, selectErr := a.selectMenuNode(ctx, reader, children[index-1], false)
 		if errors.Is(selectErr, errMenuBack) {
 			continue
 		}
@@ -116,10 +149,10 @@ func (a *App) selectMenuNode(reader *bufio.Reader, node *menuNode, root bool) (s
 
 var errMenuBack = errors.New("menu back")
 
-func (a *App) selectProvider(reader *bufio.Reader, node *menuNode) (string, error) {
+func (a *App) selectProvider(ctx context.Context, reader *bufio.Reader, node *menuNode) (string, error) {
 	for {
 		a.renderProviderMenu(menuCategories[node.ID], node.Providers)
-		choice, err := readMenuChoice(reader)
+		choice, err := readMenuChoice(ctx, reader)
 		if err != nil {
 			return "", err
 		}
@@ -176,12 +209,28 @@ func (a *App) renderMenuHeader() {
 	fmt.Fprintf(a.Out, "%s%s%s  %s%s%s  %s(%s)%s\n", menuBold(), a.Config.Policy.BrandName, menuReset(), menuDim(), "Pterodactyl multi-provider launcher", menuReset(), menuDim(), a.Config.Arch, menuReset())
 }
 
+func menuFrameTop(title string) string {
+	titleRunes := []rune(strings.TrimSpace(title))
+	// Keep at least one rule character between the title and the right corner.
+	maxTitleWidth := menuFrameInnerWidth - len([]rune("─ ")) - len([]rune(" ")) - 1
+	if len(titleRunes) > maxTitleWidth {
+		titleRunes = titleRunes[:maxTitleWidth]
+	}
+	title = string(titleRunes)
+	ruleWidth := menuFrameInnerWidth - len([]rune("─ ")) - len(titleRunes) - len([]rune(" "))
+	return "╭─ " + title + " " + strings.Repeat("─", ruleWidth) + "╮"
+}
+
+func menuFrameBottom() string {
+	return "╰" + strings.Repeat("─", menuFrameInnerWidth) + "╯"
+}
+
 func (a *App) renderCategoryMenu(parent *menuNode, children []*menuNode, root bool) {
 	title := "SELECT A SOFTWARE CATEGORY"
 	if parent.ID != "" {
 		title = strings.ToUpper(menuCategories[parent.ID].Name)
 	}
-	fmt.Fprintf(a.Out, "\n%s╭─ %-56s╮%s\n", menuBlue(), title+" ", menuReset())
+	fmt.Fprintf(a.Out, "\n%s%s%s\n", menuBlue(), menuFrameTop(title), menuReset())
 	for index, child := range children {
 		category := menuCategories[child.ID]
 		fmt.Fprintf(a.Out, "%s│%s  %s[%d]%s %-22s %2d software                  %s│%s\n", menuBlue(), menuReset(), menuYellow(), index+1, menuReset(), category.Name, menuLeafCount(child), menuBlue(), menuReset())
@@ -192,17 +241,17 @@ func (a *App) renderCategoryMenu(parent *menuNode, children []*menuNode, root bo
 	} else {
 		fmt.Fprintf(a.Out, "%s│%s  %s[b]%s Back        %s[q]%s Quit                                %s│%s\n", menuBlue(), menuReset(), menuYellow(), menuReset(), menuYellow(), menuReset(), menuBlue(), menuReset())
 	}
-	fmt.Fprintf(a.Out, "%s╰──────────────────────────────────────────────────────────╯%s\n", menuBlue(), menuReset())
+	fmt.Fprintf(a.Out, "%s%s%s\n", menuBlue(), menuFrameBottom(), menuReset())
 	fmt.Fprintf(a.Out, "%sSelect category%s › ", menuBold(), menuReset())
 }
 
 func (a *App) renderProviderMenu(category menuCategory, providers []ProviderSpec) {
-	fmt.Fprintf(a.Out, "\n%s╭─ %-56s╮%s\n", menuBlue(), strings.ToUpper(category.Name)+" ", menuReset())
+	fmt.Fprintf(a.Out, "\n%s%s%s\n", menuBlue(), menuFrameTop(strings.ToUpper(category.Name)), menuReset())
 	for index, provider := range providers {
 		fmt.Fprintf(a.Out, "%s│%s  %s[%d]%s %-31s %s%-20s%s%s│%s\n", menuBlue(), menuReset(), menuYellow(), index+1, menuReset(), provider.Name, menuDim(), provider.ID, menuReset(), menuBlue(), menuReset())
 	}
 	fmt.Fprintf(a.Out, "%s│%s  %s[b]%s Back        %s[q]%s Quit                                %s│%s\n", menuBlue(), menuReset(), menuYellow(), menuReset(), menuYellow(), menuReset(), menuBlue(), menuReset())
-	fmt.Fprintf(a.Out, "%s╰──────────────────────────────────────────────────────────╯%s\n", menuBlue(), menuReset())
+	fmt.Fprintf(a.Out, "%s%s%s\n", menuBlue(), menuFrameBottom(), menuReset())
 	fmt.Fprintf(a.Out, "%sSelect software%s › ", menuBold(), menuReset())
 }
 
@@ -211,16 +260,32 @@ func (a *App) menuWarning(format string, args ...any) {
 	fmt.Fprintf(a.Out, "\n%s[PCVM] %s%s\n", menuYellow(), message, menuReset())
 }
 
-func readMenuChoice(reader *bufio.Reader) (string, error) {
-	line, err := reader.ReadString('\n')
-	choice := strings.TrimSpace(line)
-	if err == nil || errors.Is(err, io.EOF) && choice != "" {
-		return choice, nil
+func readMenuChoice(ctx context.Context, reader *bufio.Reader) (string, error) {
+	type result struct {
+		choice string
+		err    error
 	}
-	if errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("console input closed during software selection")
+	resultCh := make(chan result, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		choice := strings.TrimSpace(line)
+		if err == nil || errors.Is(err, io.EOF) && choice != "" {
+			resultCh <- result{choice: choice}
+			return
+		}
+		if errors.Is(err, io.EOF) {
+			resultCh <- result{err: fmt.Errorf("console input closed during software selection")}
+			return
+		}
+		resultCh <- result{err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", context.Cause(ctx)
+	case result := <-resultCh:
+		return result.choice, result.err
 	}
-	return "", err
 }
 
 func menuColors() bool { return os.Getenv("NO_COLOR") == "" && os.Getenv("PCVM_COLOR") != "0" }
