@@ -575,7 +575,7 @@ func cloudInitUserDataForProvider(provider, hostname, arch string) string {
 func alpineCloudInitUserData(hostname, arch string) string {
 	_ = arch // the guest selects whichever serial device firmware made active
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
-	autologin := "#!/bin/sh\nprintf '%s\\n' '[PCVM-GUEST] READY'\nexec /bin/login -f pcvm\n"
+	autologin := "#!/bin/sh\n/usr/local/sbin/pcvm-ready\nexec /bin/login -f pcvm\n"
 	sudoCompat := `#!/bin/sh
 if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
     shift
@@ -587,6 +587,7 @@ if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
 fi
 exec /usr/bin/doas "$@"
 `
+	ready := vmGuestReadyScript()
 	firstBoot := `#!/bin/sh
 set -eu
 active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
@@ -636,6 +637,10 @@ write_files:
     permissions: '0755'
     encoding: b64
     content: %s
+  - path: /usr/local/sbin/pcvm-ready
+    permissions: '0755'
+    encoding: b64
+    content: %s
   - path: /usr/local/bin/sudo
     permissions: '0755'
     encoding: b64
@@ -646,7 +651,7 @@ write_files:
     content: %s
 runcmd:
   - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
-	`, hostname, encode(autologin), encode(sudoCompat), encode(firstBoot))) + "\n"
+	`, hostname, encode(autologin), encode(ready), encode(sudoCompat), encode(firstBoot))) + "\n"
 }
 
 func vmGuestReadyScript() string {

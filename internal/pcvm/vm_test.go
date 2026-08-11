@@ -185,7 +185,7 @@ func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 	if strings.Contains(data, "\t") {
 		t.Fatalf("Alpine cloud-init contains a YAML-invalid tab: %q", data)
 	}
-	for _, want := range []string{"hostname: tiny-vm", "shell: /bin/ash", "/etc/doas.conf", "/usr/local/sbin/pcvm-autologin", "/usr/local/bin/sudo"} {
+	for _, want := range []string{"hostname: tiny-vm", "shell: /bin/ash", "/etc/doas.conf", "/usr/local/sbin/pcvm-autologin", "/usr/local/sbin/pcvm-ready", "/usr/local/bin/sudo"} {
 		if !strings.Contains(data, want) {
 			t.Fatalf("Alpine cloud-init missing %q: %s", want, data)
 		}
@@ -205,8 +205,8 @@ func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 			t.Fatalf("Alpine cloud-init missing encoded %q", script)
 		}
 	}
-	if strings.Count(decoded.String(), "[PCVM-GUEST] READY") != 1 || strings.Contains(data, "/etc/local.d/") || strings.Contains(data, "/usr/local/sbin/pcvm-ready") {
-		t.Fatal("Alpine readiness must be emitted only by the serial autologin wrapper")
+	if strings.Count(decoded.String(), "[PCVM-GUEST] READY") != 1 || strings.Count(decoded.String(), "/usr/local/sbin/pcvm-ready\n") != 1 || strings.Contains(data, "/etc/local.d/") {
+		t.Fatal("Alpine readiness must be emitted once through the active-console helper")
 	}
 	if strings.Contains(data, "packages:") || strings.Contains(strings.ToLower(data), "password:") {
 		t.Fatal("Alpine provisioning downloads packages or persists a password")
