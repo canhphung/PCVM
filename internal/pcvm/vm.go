@@ -489,29 +489,46 @@ func createNoCloudSeed(ctx context.Context, stageDir, output, provider, hostname
 }
 
 func cloudInitUserData(hostname, arch string) string {
-	console := "ttyS0"
-	if arch == "arm64" {
-		console = "ttyAMA0"
-	}
+	_ = arch // the guest selects whichever serial device firmware made active
 	autologin := `[Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin pcvm --noclear %I $TERM
 `
+	ready := vmGuestReadyScript()
 	readyUnit := `[Unit]
 Description=PCVM guest readiness marker
-After=network-online.target serial-getty@%s.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'echo "[PCVM-GUEST] READY" > /dev/console'
+ExecStart=/usr/local/sbin/pcvm-ready
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 `
+	firstBoot := `#!/bin/sh
+set -eu
+active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
+console=
+for candidate in $active_consoles ttyAMA0 ttyS0; do
+    case "$candidate" in
+        ttyAMA0|ttyS0)
+            if [ -c "/dev/$candidate" ]; then
+                console="$candidate"
+                break
+            fi
+            ;;
+    esac
+done
+[ -n "$console" ]
+systemctl daemon-reload
+systemctl restart "serial-getty@$console.service"
+systemctl enable --now pcvm-ready.service
+`
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
-	return fmt.Sprintf(`#cloud-config
+	return strings.TrimSpace(fmt.Sprintf(`#cloud-config
 hostname: %s
 manage_etc_hosts: true
 disable_root: true
@@ -535,11 +552,17 @@ write_files:
     permissions: '0644'
     encoding: b64
     content: %s
+  - path: /usr/local/sbin/pcvm-ready
+    permissions: '0755'
+    encoding: b64
+    content: %s
+  - path: /usr/local/sbin/pcvm-firstboot
+    permissions: '0755'
+    encoding: b64
+    content: %s
 runcmd:
-  - [systemctl, daemon-reload]
-  - [systemctl, restart, serial-getty@%s.service]
-  - [systemctl, enable, --now, pcvm-ready.service]
-`, hostname, encode(autologin), encode(autologin), encode(fmt.Sprintf(readyUnit, console)), console)
+  - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
+	`, hostname, encode(autologin), encode(autologin), encode(readyUnit), encode(ready), encode(firstBoot))) + "\n"
 }
 
 func cloudInitUserDataForProvider(provider, hostname, arch string) string {
@@ -550,36 +573,53 @@ func cloudInitUserDataForProvider(provider, hostname, arch string) string {
 }
 
 func alpineCloudInitUserData(hostname, arch string) string {
-	console := "ttyS0"
-	if arch == "arm64" {
-		console = "ttyAMA0"
-	}
+	_ = arch // the guest selects whichever serial device firmware made active
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
-	autologin := "#!/bin/sh\nexec /bin/login -f pcvm\n"
+	autologin := "#!/bin/sh\n/usr/local/sbin/pcvm-ready\nexec /bin/login -f pcvm\n"
 	sudoCompat := `#!/bin/sh
 if [ "$#" -gt 0 ] && [ "$1" = "-i" ]; then
     shift
-    exec /usr/bin/doas -s "$@"
+    if [ "$#" -gt 0 ] && [ "$1" = "-c" ]; then
+        shift
+        exec /usr/bin/doas /bin/ash -c "$@"
+    fi
+    exec /usr/bin/doas /bin/ash -l "$@"
 fi
 exec /usr/bin/doas "$@"
 `
-	ready := "#!/bin/sh\necho \"[PCVM-GUEST] READY\" > /dev/console\n"
-	firstBoot := fmt.Sprintf(`#!/bin/sh
+	ready := vmGuestReadyScript()
+	localReady := "#!/bin/sh\nexec /usr/local/sbin/pcvm-ready\n"
+	firstBoot := `#!/bin/sh
 set -eu
-console=%s
+active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
+console=
+for candidate in $active_consoles ttyAMA0 ttyS0; do
+    case "$candidate" in
+        ttyAMA0|ttyS0)
+            if [ -c "/dev/$candidate" ]; then
+                console="$candidate"
+                break
+            fi
+            ;;
+    esac
+done
+[ -n "$console" ]
+mkdir -p /etc/doas.d
+rm -f /etc/doas.conf /etc/doas.d/*.conf
+printf '%s\n' 'permit nopass pcvm as root' > /etc/doas.conf
+chmod 0400 /etc/doas.conf
 line="$console::respawn:/sbin/getty -n -l /usr/local/sbin/pcvm-autologin -L $console 115200 vt100"
 if grep -q "^$console::" /etc/inittab; then
     sed -i "\\|^$console::|c\\$line" /etc/inittab
 else
-    printf '%%s\n' "$line" >> /etc/inittab
+    printf '%s\n' "$line" >> /etc/inittab
 fi
 rc-update add local default
 passwd -l root >/dev/null 2>&1 || true
 passwd -l alpine >/dev/null 2>&1 || true
 kill -HUP 1
-/usr/local/sbin/pcvm-ready
-`, console)
-	return fmt.Sprintf(`#cloud-config
+`
+	return strings.TrimSpace(fmt.Sprintf(`#cloud-config
 hostname: %s
 manage_etc_hosts: true
 disable_root: true
@@ -591,14 +631,11 @@ users:
     shell: /bin/ash
     lock_passwd: true
 write_files:
-  - path: /etc/doas.d/pcvm.conf
+  - path: /etc/doas.conf
     permissions: '0400'
-    content: permit nopass pcvm as root
+    content: |
+      permit nopass pcvm as root
   - path: /usr/local/sbin/pcvm-autologin
-    permissions: '0755'
-    encoding: b64
-    content: %s
-  - path: /usr/local/bin/sudo
     permissions: '0755'
     encoding: b64
     content: %s
@@ -610,13 +647,46 @@ write_files:
     permissions: '0755'
     encoding: b64
     content: %s
+  - path: /usr/local/bin/sudo
+    permissions: '0755'
+    encoding: b64
+    content: %s
   - path: /usr/local/sbin/pcvm-firstboot
     permissions: '0755'
     encoding: b64
     content: %s
 runcmd:
   - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
-`, hostname, encode(autologin), encode(sudoCompat), encode(ready), encode(ready), encode(firstBoot))
+	`, hostname, encode(autologin), encode(ready), encode(localReady), encode(sudoCompat), encode(firstBoot))) + "\n"
+}
+
+func vmGuestReadyScript() string {
+	return `#!/bin/sh
+active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
+console=
+for candidate in $active_consoles ttyAMA0 ttyS0; do
+    case "$candidate" in
+        ttyAMA0|ttyS0)
+            if [ -c "/dev/$candidate" ]; then
+                console="$candidate"
+                break
+            fi
+            ;;
+    esac
+done
+[ -n "$console" ] || exit 1
+boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+[ -n "$boot_id" ] || exit 1
+guard="/run/pcvm-ready.$boot_id.once"
+if mkdir "$guard" 2>/dev/null; then
+    if printf '%s\n' '[PCVM-GUEST] READY' > "/dev/$console"; then
+        exit 0
+    fi
+    rmdir "$guard" 2>/dev/null || true
+    exit 1
+fi
+exit 0
+`
 }
 
 func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory MemoryPlan) (ProcessSpec, error) {
@@ -625,6 +695,7 @@ func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory M
 	if err != nil {
 		return ProcessSpec{}, err
 	}
+	resources = stabilizeARMTCGResources(cfg.Arch, cfg.Request, resources)
 	vmDir := filepath.Join(cfg.Home, "vm")
 	if err := validateVMFiles(vmDir); err != nil {
 		return ProcessSpec{}, err
@@ -664,6 +735,18 @@ func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory M
 		ReadyTimeout: 15 * time.Minute, StopTimeout: 90 * time.Second}, nil
 }
 
+func stabilizeARMTCGResources(arch string, req Request, resources vmResources) vmResources {
+	// Debian bookworm ships QEMU 7.2. Its multi-vCPU AArch64 TCG path can
+	// deadlock current Alpine kernels during early userspace mounts. Keep the
+	// safe automatic default at one vCPU on ARM64 while preserving an explicit
+	// administrator/user VM_CPUS choice. AMD64 remains capped at two by the
+	// normal resource planner.
+	if arch == "arm64" && (req.VMCPUs == "" || req.VMCPUs == "auto") && resources.CPUs > 1 {
+		resources.CPUs = 1
+	}
+	return resources
+}
+
 func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string {
 	vmDir := filepath.Join(cfg.Home, "vm")
 	args := []string{"-name", "PCVM", "-accel", "tcg,thread=multi", "-m", strconv.Itoa(resources.MemoryMB), "-smp", strconv.Itoa(resources.CPUs),
@@ -671,14 +754,37 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
 		"-drive", "if=pflash,format=raw,readonly=on,file=" + code,
 		"-drive", "if=pflash,format=raw,file=" + filepath.Join(vmDir, "uefi-vars.fd"),
-		"-drive", "if=none,file=" + filepath.Join(vmDir, "disk.qcow2") + ",format=qcow2,id=osdisk,cache=writeback,discard=unmap",
-		"-device", "virtio-blk-pci,drive=osdisk,bootindex=1", "-device", "virtio-scsi-pci,id=scsi0",
-		"-drive", "if=none,media=cdrom,readonly=on,file=" + filepath.Join(vmDir, "seed.iso") + ",format=raw,id=seed",
-		"-device", "scsi-cd,drive=seed,bootindex=99", "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0"}
+		"-drive", "if=none,file=" + filepath.Join(vmDir, "disk.qcow2") + ",format=qcow2,id=osdisk,cache=writeback,discard=unmap"}
 	if cfg.Arch == "amd64" {
+		args = append(args,
+			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1",
+			"-device", "virtio-scsi-pci,id=scsi0",
+		)
 		args = append([]string{"-machine", "q35", "-cpu", "max"}, args...)
 	} else {
-		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "max"}, args...)
+		// Use ROMless PCI transports: virtio-MMIO can starve Alpine's page
+		// allocator under QEMU 7.2 TCG. Cortex-A72 is the bounded ARMv8 model
+		// verified by the native ARM smoke matrix and avoids the expensive
+		// SVE/SME feature surface exposed by QEMU's max model.
+		args = append(args,
+			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
+			"-device", "virtio-scsi-pci,id=scsi0,romfile=",
+		)
+		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "cortex-a72"}, args...)
+	}
+	args = append(args,
+		"-drive", "if=none,media=cdrom,readonly=on,file="+filepath.Join(vmDir, "seed.iso")+",format=raw,id=seed",
+		"-device", "scsi-cd,drive=seed,bus=scsi0.0,bootindex=99",
+		"-netdev", "user,id=net0",
+	)
+	if cfg.Arch == "amd64" {
+		args = append(args, "-device", "virtio-net-pci,netdev=net0")
+	} else {
+		args = append(args,
+			"-device", "virtio-net-pci,netdev=net0,romfile=",
+			"-object", "rng-random,filename=/dev/urandom,id=rng0",
+			"-device", "virtio-rng-pci,rng=rng0,romfile=",
+		)
 	}
 	return args
 }

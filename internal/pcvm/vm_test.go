@@ -99,6 +99,21 @@ func TestVMResourceCalculation(t *testing.T) {
 	}
 }
 
+func TestARM64AutoCPUUsesStableSingleVCPU(t *testing.T) {
+	auto := stabilizeARMTCGResources("arm64", Request{VMCPUs: "auto"}, vmResources{MemoryMB: 2048, CPUs: 2})
+	if auto.CPUs != 1 {
+		t.Fatalf("ARM64 automatic resources use %d CPUs, want 1", auto.CPUs)
+	}
+	manual := stabilizeARMTCGResources("arm64", Request{VMCPUs: "2"}, vmResources{MemoryMB: 2048, CPUs: 2})
+	if manual.CPUs != 2 {
+		t.Fatalf("ARM64 manual CPU choice was changed to %d", manual.CPUs)
+	}
+	amd64 := stabilizeARMTCGResources("amd64", Request{VMCPUs: "auto"}, vmResources{MemoryMB: 2048, CPUs: 2})
+	if amd64.CPUs != 2 {
+		t.Fatalf("AMD64 automatic resources were changed to %d", amd64.CPUs)
+	}
+}
+
 func TestVMValidationAndCloudInit(t *testing.T) {
 	spec := ProviderSpec{ID: "vm-ubuntu", MinimumDisk: 8192}
 	cfg := Config{Arch: "amd64", Request: Request{Architecture: "amd64", VMMemoryMB: "auto", VMCPUs: "auto", VMDiskGB: 10, VMHostname: "lab-vm"}, Policy: vmTestPolicy()}
@@ -114,10 +129,29 @@ func TestVMValidationAndCloudInit(t *testing.T) {
 	if strings.Contains(strings.ToLower(data), "password:") {
 		t.Fatal("cloud-init persisted a password")
 	}
-	if strings.Contains(data, "%!") || !strings.Contains(data, "restart, serial-getty@ttyS0.service") {
+	if strings.Contains(data, "%!") || strings.Contains(data, "\t") {
 		t.Fatalf("invalid AMD64 cloud-init formatting: %s", data)
 	}
-	if arm := cloudInitUserData("lab-vm", "arm64"); !strings.Contains(arm, "restart, serial-getty@ttyAMA0.service") {
+	decodeFiles := func(config string) string {
+		var decoded strings.Builder
+		for _, line := range strings.Split(config, "\n") {
+			value := strings.TrimPrefix(strings.TrimSpace(line), "content: ")
+			if value == strings.TrimSpace(line) {
+				continue
+			}
+			if raw, err := base64.StdEncoding.DecodeString(value); err == nil {
+				decoded.Write(raw)
+			}
+		}
+		return decoded.String()
+	}
+	if !strings.Contains(decodeFiles(data), `systemctl restart "serial-getty@$console.service"`) {
+		t.Fatalf("systemd cloud-init does not restart the active serial getty: %s", data)
+	}
+	if decoded := decodeFiles(data); !strings.Contains(decoded, "/sys/class/tty/console/active") || !strings.Contains(decoded, `> "/dev/$console"`) {
+		t.Fatal("readiness marker does not select the active serial console")
+	}
+	if arm := cloudInitUserData("lab-vm", "arm64"); !strings.Contains(decodeFiles(arm), "ttyAMA0 ttyS0") || !strings.Contains(decodeFiles(arm), `systemctl restart "serial-getty@$console.service"`) {
 		t.Fatalf("ARM64 cloud-init targets the wrong serial console: %s", arm)
 	}
 	cfg.Request.VMHostname = "bad/name"
@@ -148,7 +182,10 @@ func TestVMValidationAndCloudInit(t *testing.T) {
 
 func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 	data := alpineCloudInitUserData("tiny-vm", "arm64")
-	for _, want := range []string{"hostname: tiny-vm", "shell: /bin/ash", "/etc/doas.d/pcvm.conf", "/etc/local.d/pcvm-ready.start", "/usr/local/bin/sudo"} {
+	if strings.Contains(data, "\t") {
+		t.Fatalf("Alpine cloud-init contains a YAML-invalid tab: %q", data)
+	}
+	for _, want := range []string{"hostname: tiny-vm", "shell: /bin/ash", "/etc/doas.conf", "/usr/local/sbin/pcvm-autologin", "/usr/local/sbin/pcvm-ready", "/etc/local.d/pcvm-ready.start", "/usr/local/bin/sudo"} {
 		if !strings.Contains(data, want) {
 			t.Fatalf("Alpine cloud-init missing %q: %s", want, data)
 		}
@@ -163,10 +200,13 @@ func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 			decoded.Write(raw)
 		}
 	}
-	for _, script := range []string{"ttyAMA0", "rc-update add local default", "[PCVM-GUEST] READY", `exec /usr/bin/doas -s "$@"`} {
+	for _, script := range []string{"ttyAMA0 ttyS0", "/sys/class/tty/console/active", `[ -c "/dev/$candidate" ]`, "/proc/sys/kernel/random/boot_id", "pcvm-ready.$boot_id.once", "rc-update add local default", "rm -f /etc/doas.conf /etc/doas.d/*.conf", "permit nopass pcvm as root", "[PCVM-GUEST] READY", `exec /usr/bin/doas /bin/ash -c "$@"`, `exec /usr/bin/doas /bin/ash -l "$@"`} {
 		if !strings.Contains(decoded.String(), script) {
 			t.Fatalf("Alpine cloud-init missing encoded %q", script)
 		}
+	}
+	if strings.Count(decoded.String(), "[PCVM-GUEST] READY") != 1 || strings.Count(decoded.String(), "/usr/local/sbin/pcvm-ready\n") != 2 {
+		t.Fatal("Alpine readiness callers must share one boot-ID guarded active-console helper")
 	}
 	if strings.Contains(data, "packages:") || strings.Contains(strings.ToLower(data), "password:") {
 		t.Fatal("Alpine provisioning downloads packages or persists a password")
@@ -231,8 +271,33 @@ func TestQEMUArgumentsCannotBeOverriddenByUserInput(t *testing.T) {
 	if strings.Count(joined, "-cpu max") != 1 {
 		t.Fatalf("AMD64 TCG must use exactly one max CPU model: %s", joined)
 	}
-	if !strings.Contains(joined, "virtio-blk-pci,drive=osdisk,bootindex=1") || !strings.Contains(joined, "scsi-cd,drive=seed,bootindex=99") {
+	if !strings.Contains(joined, "virtio-blk-pci,drive=osdisk,bootindex=1") || !strings.Contains(joined, "scsi-cd,drive=seed,bus=scsi0.0,bootindex=99") {
 		t.Fatalf("QEMU argv does not boot the OS disk before the NoCloud seed: %s", joined)
+	}
+}
+
+func TestQEMUArgumentsUseROMlessVirtioPCIOnARM64(t *testing.T) {
+	cfg := Config{Home: "/home/container", Arch: "arm64"}
+	joined := strings.Join(qemuArguments(cfg, vmResources{MemoryMB: 1024, CPUs: 2}, "/usr/share/AAVMF/AAVMF_CODE.fd", "/home/container/vm/qmp.sock"), " ")
+	for _, required := range []string{
+		"tcg,thread=multi",
+		"virt,gic-version=max",
+		"-cpu cortex-a72",
+		"virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
+		"virtio-scsi-pci,id=scsi0,romfile=",
+		"virtio-net-pci,netdev=net0,romfile=",
+		"rng-random,filename=/dev/urandom,id=rng0",
+		"virtio-rng-pci,rng=rng0,romfile=",
+		"scsi-cd,drive=seed,bus=scsi0.0,bootindex=99",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("ARM64 QEMU argv missing %q: %s", required, joined)
+		}
+	}
+	for _, forbidden := range []string{"-cpu max", "-cpu cortex-a76", "efi-virtio.rom", "virtio-blk-device", "virtio-scsi-device", "virtio-net-device", "virtio-rng-device"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("ARM64 QEMU argv contains an unsupported device/ROM setting %q: %s", forbidden, joined)
+		}
 	}
 }
 
