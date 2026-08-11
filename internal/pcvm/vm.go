@@ -717,7 +717,15 @@ func stabilizeARMTCGResources(arch string, req Request, resources vmResources) v
 
 func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string {
 	vmDir := filepath.Join(cfg.Home, "vm")
-	args := []string{"-name", "PCVM", "-accel", "tcg,thread=multi", "-m", strconv.Itoa(resources.MemoryMB), "-smp", strconv.Itoa(resources.CPUs),
+	accel := "tcg,thread=multi"
+	if cfg.Arch == "arm64" && resources.CPUs == 1 {
+		// QEMU 7.2's multi-threaded AArch64 TCG can stall during Alpine's
+		// switch_root even with one guest CPU. A single TCG thread removes that
+		// race without reducing guest parallelism; explicit multi-vCPU VMs keep
+		// multi-threaded TCG.
+		accel = "tcg,thread=single"
+	}
+	args := []string{"-name", "PCVM", "-accel", accel, "-m", strconv.Itoa(resources.MemoryMB), "-smp", strconv.Itoa(resources.CPUs),
 		"-display", "none", "-serial", "stdio", "-monitor", "none", "-qmp", "unix:" + qmp + ",server=on,wait=off",
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
 		"-drive", "if=pflash,format=raw,readonly=on,file=" + code,
@@ -731,9 +739,9 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		args = append([]string{"-machine", "q35", "-cpu", "max"}, args...)
 	} else {
 		// Use ROMless PCI transports: virtio-MMIO can starve Alpine's page
-		// allocator under QEMU 7.2 TCG. Cortex-A76 supplies ARMv8.2 LSE atomics,
-		// avoiding the LL/SC lockup seen with Cortex-A72 without exposing the
-		// expensive SVE surface of QEMU's max model.
+		// allocator under QEMU 7.2 TCG. Cortex-A72 is the bounded ARMv8 model
+		// verified by the native ARM smoke matrix and avoids the expensive
+		// SVE/SME feature surface exposed by QEMU's max model.
 		args = append(args,
 			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
 			"-device", "virtio-scsi-pci,id=scsi0,romfile=",

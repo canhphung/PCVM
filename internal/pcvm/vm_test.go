@@ -280,6 +280,7 @@ func TestQEMUArgumentsUseROMlessVirtioPCIOnARM64(t *testing.T) {
 	cfg := Config{Home: "/home/container", Arch: "arm64"}
 	joined := strings.Join(qemuArguments(cfg, vmResources{MemoryMB: 1024, CPUs: 2}, "/usr/share/AAVMF/AAVMF_CODE.fd", "/home/container/vm/qmp.sock"), " ")
 	for _, required := range []string{
+		"tcg,thread=multi",
 		"virt,gic-version=max",
 		"-cpu cortex-a72",
 		"virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
@@ -297,6 +298,10 @@ func TestQEMUArgumentsUseROMlessVirtioPCIOnARM64(t *testing.T) {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("ARM64 QEMU argv contains an unsupported device/ROM setting %q: %s", forbidden, joined)
 		}
+	}
+	oneCPU := strings.Join(qemuArguments(cfg, vmResources{MemoryMB: 1024, CPUs: 1}, "/usr/share/AAVMF/AAVMF_CODE.fd", "/home/container/vm/qmp.sock"), " ")
+	if !strings.Contains(oneCPU, "tcg,thread=single") || strings.Contains(oneCPU, "tcg,thread=multi") {
+		t.Fatalf("single-vCPU ARM64 QEMU must use stable single-threaded TCG: %s", oneCPU)
 	}
 }
 
