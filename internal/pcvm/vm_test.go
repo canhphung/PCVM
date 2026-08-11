@@ -301,6 +301,15 @@ func TestQEMUArgumentsUseROMlessVirtioPCIOnARM64(t *testing.T) {
 	}
 }
 
+func TestVMReadyTimeoutAllowsSlowerARMTCG(t *testing.T) {
+	if got := vmReadyTimeout("amd64"); got != 15*time.Minute {
+		t.Fatalf("AMD64 VM readiness timeout=%s", got)
+	}
+	if got := vmReadyTimeout("arm64"); got != 20*time.Minute {
+		t.Fatalf("ARM64 VM readiness timeout=%s", got)
+	}
+}
+
 func TestVMInstallMetadataMatching(t *testing.T) {
 	dir := t.TempDir()
 	meta := vmInstallMetadata{Schema: vmInstallSchema, ImageID: "debian", Variant: "genericcloud", Compression: "off", Provider: "vm-debian", Version: "13", Build: "build", Architecture: "amd64", Checksum: "sum", DiskGB: 10, Hostname: "pcvm"}

@@ -732,7 +732,16 @@ func (p *catalogProvider) buildVMProcess(cfg Config, state LaunchState, memory M
 	return ProcessSpec{Command: append([]string{qemuBinary(cfg.Arch)}, args...), Directory: cfg.Home,
 		Readiness: ReadinessSpec{Mode: "regex", Patterns: []string{`\[PCVM-GUEST\] READY`}},
 		Control:   ControlSpec{Mode: "qmp", SocketPath: qmp}, RawOutput: true, RepeatReadiness: true,
-		ReadyTimeout: 15 * time.Minute, StopTimeout: 90 * time.Second}, nil
+		ReadyTimeout: vmReadyTimeout(cfg.Arch), StopTimeout: 90 * time.Second}, nil
+}
+
+func vmReadyTimeout(arch string) time.Duration {
+	if arch == "arm64" {
+		// Pure TCG boot speed varies significantly across ARM nodes. Keep an
+		// explicit ceiling, but allow cloud-init enough time on slower hosts.
+		return 20 * time.Minute
+	}
+	return 15 * time.Minute
 }
 
 func stabilizeARMTCGResources(arch string, req Request, resources vmResources) vmResources {
