@@ -762,13 +762,14 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		)
 		args = append([]string{"-machine", "q35", "-cpu", "max"}, args...)
 	} else {
-		// Use ROMless PCI transports: virtio-MMIO can starve Alpine's page
-		// allocator under QEMU 7.2 TCG. Cortex-A72 is the bounded ARMv8 model
+		// Use modern-only ROMless PCI transports: virtio-MMIO and transitional
+		// legacy PCI can stall Alpine under QEMU 7.2 TCG. Cortex-A72 is the
+		// bounded ARMv8 model
 		// verified by the native ARM smoke matrix and avoids the expensive
 		// SVE/SME feature surface exposed by QEMU's max model.
 		args = append(args,
-			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
-			"-device", "virtio-scsi-pci,id=scsi0,romfile=",
+			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,disable-legacy=on,romfile=",
+			"-device", "virtio-scsi-pci,id=scsi0,disable-legacy=on,romfile=",
 		)
 		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "cortex-a72"}, args...)
 	}
@@ -781,9 +782,9 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 		args = append(args, "-device", "virtio-net-pci,netdev=net0")
 	} else {
 		args = append(args,
-			"-device", "virtio-net-pci,netdev=net0,romfile=",
+			"-device", "virtio-net-pci,netdev=net0,disable-legacy=on,romfile=",
 			"-object", "rng-random,filename=/dev/urandom,id=rng0",
-			"-device", "virtio-rng-pci,rng=rng0,romfile=",
+			"-device", "virtio-rng-pci,rng=rng0,disable-legacy=on,romfile=",
 		)
 	}
 	return args

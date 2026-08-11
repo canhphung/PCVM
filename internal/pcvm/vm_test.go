@@ -283,11 +283,11 @@ func TestQEMUArgumentsUseROMlessVirtioPCIOnARM64(t *testing.T) {
 		"tcg,thread=multi",
 		"virt,gic-version=max",
 		"-cpu cortex-a72",
-		"virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
-		"virtio-scsi-pci,id=scsi0,romfile=",
-		"virtio-net-pci,netdev=net0,romfile=",
+		"virtio-blk-pci,drive=osdisk,bootindex=1,disable-legacy=on,romfile=",
+		"virtio-scsi-pci,id=scsi0,disable-legacy=on,romfile=",
+		"virtio-net-pci,netdev=net0,disable-legacy=on,romfile=",
 		"rng-random,filename=/dev/urandom,id=rng0",
-		"virtio-rng-pci,rng=rng0,romfile=",
+		"virtio-rng-pci,rng=rng0,disable-legacy=on,romfile=",
 		"scsi-cd,drive=seed,bus=scsi0.0,bootindex=99",
 	} {
 		if !strings.Contains(joined, required) {
