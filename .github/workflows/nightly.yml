@@ -74,8 +74,15 @@ jobs:
         run: |
           set -euo pipefail
           jq -r '.providers[].vm_images[]?.url' internal/pcvm/catalog.json | while IFS= read -r url; do
+            status=0
             curl --fail --silent --show-error --location --retry 3 --max-time 90 \
-              --range 0-0 --max-filesize 1 --output /dev/null "$url"
+              --range 0-0 --max-filesize 1 --output /dev/null "$url" || status=$?
+            # Some official mirrors ignore Range and advertise the complete
+            # image size. curl 63 still proves that the HTTPS object exists;
+            # HTTP, TLS, DNS and timeout failures retain their distinct codes.
+            if [ "$status" -ne 0 ] && [ "$status" -ne 63 ]; then
+              exit "$status"
+            fi
           done
           python3 - <<'PY'
           import json, pathlib, re, urllib.parse, urllib.request
