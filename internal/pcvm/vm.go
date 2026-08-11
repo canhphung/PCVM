@@ -738,7 +738,7 @@ func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string
 			"-device", "virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
 			"-device", "virtio-scsi-pci,id=scsi0,romfile=",
 		)
-		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "cortex-a76"}, args...)
+		args = append([]string{"-machine", "virt,gic-version=max", "-cpu", "cortex-a72"}, args...)
 	}
 	args = append(args,
 		"-drive", "if=none,media=cdrom,readonly=on,file="+filepath.Join(vmDir, "seed.iso")+",format=raw,id=seed",

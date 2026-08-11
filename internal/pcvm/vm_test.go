@@ -281,7 +281,7 @@ func TestQEMUArgumentsUseROMlessVirtioPCIOnARM64(t *testing.T) {
 	joined := strings.Join(qemuArguments(cfg, vmResources{MemoryMB: 1024, CPUs: 2}, "/usr/share/AAVMF/AAVMF_CODE.fd", "/home/container/vm/qmp.sock"), " ")
 	for _, required := range []string{
 		"virt,gic-version=max",
-		"-cpu cortex-a76",
+		"-cpu cortex-a72",
 		"virtio-blk-pci,drive=osdisk,bootindex=1,romfile=",
 		"virtio-scsi-pci,id=scsi0,romfile=",
 		"virtio-net-pci,netdev=net0,romfile=",
@@ -293,7 +293,7 @@ func TestQEMUArgumentsUseROMlessVirtioPCIOnARM64(t *testing.T) {
 			t.Fatalf("ARM64 QEMU argv missing %q: %s", required, joined)
 		}
 	}
-	for _, forbidden := range []string{"-cpu max", "-cpu cortex-a72", "efi-virtio.rom", "virtio-blk-device", "virtio-scsi-device", "virtio-net-device", "virtio-rng-device"} {
+	for _, forbidden := range []string{"-cpu max", "-cpu cortex-a76", "efi-virtio.rom", "virtio-blk-device", "virtio-scsi-device", "virtio-net-device", "virtio-rng-device"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("ARM64 QEMU argv contains an unsupported device/ROM setting %q: %s", forbidden, joined)
 		}
