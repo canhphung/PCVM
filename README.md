@@ -1,6 +1,6 @@
 # PCVM
 
-PCVM v2.0.0 is a secure `PTDL_v2` provider platform that installs and runs one of 53 providers without modifying Panel or Wings. A Universal Egg and four category Eggs share the same launcher contract while using capability-specific Minecraft, Games, Apps and VM images. The Go launcher owns provider selection, checksum-verified runtimes and cloud images, transactional lifecycle state, safe switching, cgroup-aware memory planning, port validation and process supervision. The project is MIT licensed and has no telemetry.
+PCVM v2.0.1 is a secure `PTDL_v2` provider platform that installs and runs one of 53 providers without modifying Panel or Wings. A Universal Egg and four category Eggs share the same launcher contract while using capability-specific Minecraft, Games, Apps and VM images. The Go launcher owns provider selection, checksum-verified runtimes and cloud images, transactional lifecycle state, safe switching, cgroup-aware memory planning, port validation and process supervision. The project is MIT licensed and has no telemetry.
 
 ## Provider catalog
 
@@ -23,7 +23,7 @@ All game providers are AMD64-only. `samp` installs the actively maintained open.
 
 ## Install on Pterodactyl
 
-1. Download `egg-pcvm-2.0.0.json` (Universal) or one category Egg from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
+1. Download `egg-pcvm-2.0.1.json` (Universal) or one category Egg from [GitHub Releases](https://github.com/canhphung/PCVM/releases).
 2. Import it into a Nest on Pterodactyl 1.12.x.
 3. Keep the release-pinned image generated for that Egg. Universal uses Full; category Eggs use their smaller matching image.
 4. Set `SOFTWARE`, required allocations and provider variables, then start the server.
@@ -32,11 +32,11 @@ All game providers are AMD64-only. `samp` installs the actively maintained open.
 
 | Profile | Release tag | Provider capability | Catalog count |
 |---|---|---|---:|
-| Universal / Full | `ghcr.io/canhphung/pcvm:2.0.0` | Every provider | 53 |
-| Minecraft | `ghcr.io/canhphung/pcvm:2.0.0-minecraft` | Java, proxies and Bedrock | 19 |
-| Games | `ghcr.io/canhphung/pcvm:2.0.0-games` | Native game servers | 18 |
-| Apps & Web | `ghcr.io/canhphung/pcvm:2.0.0-apps` | Web servers and applications | 11 |
-| Virtual Machines | `ghcr.io/canhphung/pcvm:2.0.0-vm` | QEMU virtual machines | 5 |
+| Universal / Full | `ghcr.io/canhphung/pcvm:2.0.1` | Every provider | 53 |
+| Minecraft | `ghcr.io/canhphung/pcvm:2.0.1-minecraft` | Java, proxies and Bedrock | 19 |
+| Games | `ghcr.io/canhphung/pcvm:2.0.1-games` | Native game servers | 18 |
+| Apps & Web | `ghcr.io/canhphung/pcvm:2.0.1-apps` | Web servers and applications | 11 |
+| Virtual Machines | `ghcr.io/canhphung/pcvm:2.0.1-vm` | QEMU virtual machines | 5 |
 
 The Universal Egg remains the broad default. Category images expose only their category; Games is AMD64-only, while Universal, Minecraft, Apps and VM are multi-architecture and still filter providers whose upstream artifact does not support the host. The image profile is compiled into the launcher and cannot be changed with a Startup Variable. The generated provider/image matrix is available in [`docs/provider-matrix.md`](docs/provider-matrix.md).
 
@@ -46,7 +46,7 @@ The Egg installation script only initializes `/mnt/server/.pcvm`. The immutable 
 /usr/local/bin/pcvm run
 ```
 
-On first start, `SOFTWARE=interactive` opens a FIGlet menu with up to three levels. Host allowlists, image capability, architecture and runtime availability filter the choices. PCVM emits `[PCVM] READY` only after provider-specific regex, delay or TCP readiness succeeds.
+On first start, `SOFTWARE=interactive` opens a FIGlet menu with up to three levels. Host allowlists, image capability, architecture and runtime availability filter the choices. If no provider is selected within five minutes, PCVM exits cleanly so Wings marks the server offline instead of leaving an idle installer running. PCVM emits `[PCVM] READY` only after provider-specific regex, delay or TCP readiness succeeds.
 
 `pcvm run` clears the visible terminal screen and scrollback before its first banner. Set the admin-only `CLEAR_CONSOLE=0` while debugging. This does not delete Wings logs, audit history or server files; `pcvm version` and other non-run commands never clear the terminal.
 

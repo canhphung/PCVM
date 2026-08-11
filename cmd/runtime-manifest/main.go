@@ -127,7 +127,7 @@ func main() {
 		return a.Kind+a.Version+a.Architecture < b.Kind+b.Version+b.Architecture
 	})
 	manifest := pcvm.RuntimeManifest{
-		Schema: pcvm.RuntimeManifestSchema, Release: "2.0.0",
+		Schema: pcvm.RuntimeManifestSchema, Release: "2.0.1",
 		Compatibility: "pcvm>=2.0.0", Packs: packs,
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")

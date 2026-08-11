@@ -2,9 +2,11 @@ package pcvm
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func menuTestApp(t *testing.T, input string, allowed map[string]bool) (*App, *bytes.Buffer) {
@@ -19,6 +21,42 @@ func menuTestApp(t *testing.T, input string, allowed map[string]bool) (*App, *by
 	return NewApp(cfg, catalog, strings.NewReader(input), output, io.Discard), output
 }
 
+func TestFreshInteractiveServerShutsDownCleanlyAfterMenuTimeout(t *testing.T) {
+	home := t.TempDir()
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	catalog, err := LoadCatalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := &bytes.Buffer{}
+	cfg := Config{
+		Home: home, Control: home + "/.pcvm", Arch: "amd64", ImageProfile: ImageProfileFull,
+		Request: Request{Software: "interactive"},
+		Policy:  Policy{AllowedSoftware: map[string]bool{"paper": true}, BrandName: "PCVM", AllowSystemPath: true},
+	}
+	app := NewApp(cfg, catalog, reader, output, io.Discard)
+	app.MenuTimeout = 25 * time.Millisecond
+	app.ResetRoot = home
+
+	if err := app.Run(context.Background()); err != nil {
+		t.Fatalf("interactive timeout must be a clean shutdown: %v", err)
+	}
+	if !strings.Contains(output.String(), "No software was selected within 25ms; shutting down cleanly") {
+		t.Fatalf("timeout shutdown was not explained to the user:\n%s", output.String())
+	}
+	state, err := LoadState(cfg.Control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != nil {
+		t.Fatalf("menu timeout unexpectedly installed state: %#v", state)
+	}
+}
+
 func TestGroupedMenuRendersFigletAndSelectsProvider(t *testing.T) {
 	app, output := menuTestApp(t, "1\n1\n", map[string]bool{
 		"paper": true, "velocity": true, "bedrock": true, "node-bot": true,
@@ -31,9 +69,36 @@ func TestGroupedMenuRendersFigletAndSelectsProvider(t *testing.T) {
 		t.Fatalf("selected=%q, want alphabetically first Java provider paper", selected)
 	}
 	text := output.String()
-	for _, want := range []string{"____  _______", "SELECT A SOFTWARE CATEGORY", "Minecraft Java", "Minecraft Proxies", "Minecraft Bedrock", "Applications & Bots", "Selected: Paper [paper]"} {
+	for _, want := range []string{"____  _______", "server shuts down after 5 minutes", "SELECT A SOFTWARE CATEGORY", "Minecraft Java", "Minecraft Proxies", "Minecraft Bedrock", "Applications & Bots", "Selected: Paper [paper]"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("menu missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestMenuFramesAreContinuousAndFixedWidth(t *testing.T) {
+	app, output := menuTestApp(t, "1\n1\n", map[string]bool{
+		"velocity": true, "bungeecord": true,
+	})
+	if _, err := app.menu(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, line := range strings.Split(output.String(), "\n") {
+		if !strings.HasPrefix(line, "╭") && !strings.HasPrefix(line, "│") && !strings.HasPrefix(line, "╰") {
+			continue
+		}
+		if width := len([]rune(line)); width != menuFrameInnerWidth+2 {
+			t.Fatalf("frame line width=%d, want %d: %q", width, menuFrameInnerWidth+2, line)
+		}
+		if strings.HasPrefix(line, "╭") {
+			lastSpace := strings.LastIndex(line, " ")
+			if lastSpace < 0 || !strings.HasSuffix(line[lastSpace+1:], "╮") || strings.TrimSuffix(line[lastSpace+1:], "╮") == "" {
+				t.Fatalf("top border does not continue after its title: %q", line)
+			}
+			if strings.Trim(strings.TrimSuffix(line[lastSpace+1:], "╮"), "─") != "" {
+				t.Fatalf("top border contains a gap after its title: %q", line)
+			}
 		}
 	}
 }

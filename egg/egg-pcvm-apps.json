@@ -7,10 +7,10 @@
   "exported_at": "2026-08-09T00:00:00+07:00",
   "name": "PCVM Apps \u0026 Web",
   "author": "canhphung@users.noreply.github.com",
-  "description": "PCVM v2.0.0 Apps \u0026 Web Egg: 11 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
+  "description": "PCVM v2.0.1 Apps \u0026 Web Egg: 11 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
   "features": [],
   "docker_images": {
-    "PCVM 2.0.0 - Apps \u0026 Web (11 providers)": "ghcr.io/canhphung/pcvm:2.0.0-apps"
+    "PCVM 2.0.1 - Apps \u0026 Web (11 providers)": "ghcr.io/canhphung/pcvm:2.0.1-apps"
   },
   "file_denylist": [
     ".pcvm"

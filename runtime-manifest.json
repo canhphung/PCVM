@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "release": "2.0.0",
+  "release": "2.0.1",
   "compatibility": "pcvm\u003e=2.0.0",
   "packs": [
     {

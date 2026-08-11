@@ -7,10 +7,10 @@
   "exported_at": "2026-08-09T00:00:00+07:00",
   "name": "PCVM Virtual Machines",
   "author": "canhphung@users.noreply.github.com",
-  "description": "PCVM v2.0.0 Virtual Machines Egg: 5 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
+  "description": "PCVM v2.0.1 Virtual Machines Egg: 5 checksum-verified providers with typed policy, safe lifecycle management and no telemetry.",
   "features": [],
   "docker_images": {
-    "PCVM 2.0.0 - Virtual Machines (5 providers)": "ghcr.io/canhphung/pcvm:2.0.0-vm"
+    "PCVM 2.0.1 - Virtual Machines (5 providers)": "ghcr.io/canhphung/pcvm:2.0.1-vm"
   },
   "file_denylist": [
     ".pcvm"

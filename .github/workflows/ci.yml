@@ -42,9 +42,9 @@ jobs:
           set -euo pipefail
           go run ./cmd/pcvm version
           go run ./cmd/egggen -check
-          jq -e '.schema == 6 and .version == "2.0.0" and (.providers | length) > 0 and ([.providers[].id] | unique | length) == (.providers | length) and all(.providers[]; (.memory.strategy | length) > 0 and .memory.recommended_mb > 0 and .memory.hard_minimum_mb >= 0)' internal/pcvm/catalog.json
+          jq -e '.schema == 6 and .version == "2.0.1" and (.providers | length) > 0 and ([.providers[].id] | unique | length) == (.providers | length) and all(.providers[]; (.memory.strategy | length) > 0 and .memory.recommended_mb > 0 and .memory.hard_minimum_mb >= 0)' internal/pcvm/catalog.json
           jq -e '
-            .schema == 1 and .release == "2.0.0" and .compatibility == "pcvm>=2.0.0"
+            .schema == 1 and .release == "2.0.1" and .compatibility == "pcvm>=2.0.0"
             and (.packs | length) == 38
             and ([.packs[].id] | unique | length) == (.packs | length)
             and all(.packs[];
@@ -102,7 +102,7 @@ jobs:
           platforms: ${{ matrix.platforms }}
           push: false
           build-args: |
-            VERSION=2.0.0
+            VERSION=2.0.1
             PROFILE=${{ matrix.profile }}
           cache-from: type=gha,scope=profile-${{ matrix.profile }}
           cache-to: type=gha,mode=max,scope=profile-${{ matrix.profile }}
@@ -276,7 +276,7 @@ jobs:
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - name: Build architecture image
-        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=2.0.0 --build-arg PROFILE=apps -t "pcvm:web-${ARCH}" .
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=2.0.1 --build-arg PROFILE=apps -t "pcvm:web-${ARCH}" .
         env:
           ARCH: ${{ matrix.arch }}
       - name: Verify embedded Apps profile and package boundary
@@ -291,7 +291,7 @@ jobs:
       - name: Build Minecraft profile architecture image
         env:
           ARCH: ${{ matrix.arch }}
-        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=2.0.0 --build-arg PROFILE=minecraft -t "pcvm:minecraft-${ARCH}" .
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=2.0.1 --build-arg PROFILE=minecraft -t "pcvm:minecraft-${ARCH}" .
       - name: Verify minimal Minecraft package boundary
         env:
           ARCH: ${{ matrix.arch }}
@@ -448,7 +448,7 @@ jobs:
       - name: Build VM profile architecture image
         env:
           ARCH: ${{ matrix.arch }}
-        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=2.0.0 --build-arg PROFILE=vm -t "pcvm:vm-${ARCH}" .
+        run: docker buildx build --platform "linux/${ARCH}" --load --build-arg VERSION=2.0.1 --build-arg PROFILE=vm -t "pcvm:vm-${ARCH}" .
       - name: Verify non-root VM profile, QEMU and firmware under Wings-like restrictions
         env:
           ARCH: ${{ matrix.arch }}
@@ -470,7 +470,7 @@ jobs:
         if: matrix.arch == 'amd64'
         run: |
           set -euo pipefail
-          docker buildx build --platform linux/amd64 --load --build-arg VERSION=2.0.0 --build-arg PROFILE=games -t pcvm:games-amd64 .
+          docker buildx build --platform linux/amd64 --load --build-arg VERSION=2.0.1 --build-arg PROFILE=games -t pcvm:games-amd64 .
           test "$(docker run --rm --entrypoint /usr/local/bin/pcvm pcvm:games-amd64 profile)" = games
           docker run --rm --read-only --security-opt no-new-privileges --cap-drop ALL \
             --entrypoint /bin/sh pcvm:games-amd64 -ec \
