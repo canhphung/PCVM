@@ -588,6 +588,7 @@ fi
 exec /usr/bin/doas "$@"
 `
 	ready := vmGuestReadyScript()
+	localReady := "#!/bin/sh\nexec /usr/local/sbin/pcvm-ready\n"
 	firstBoot := `#!/bin/sh
 set -eu
 active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
@@ -613,6 +614,7 @@ if grep -q "^$console::" /etc/inittab; then
 else
     printf '%s\n' "$line" >> /etc/inittab
 fi
+rc-update add local default
 passwd -l root >/dev/null 2>&1 || true
 passwd -l alpine >/dev/null 2>&1 || true
 kill -HUP 1
@@ -641,6 +643,10 @@ write_files:
     permissions: '0755'
     encoding: b64
     content: %s
+  - path: /etc/local.d/pcvm-ready.start
+    permissions: '0755'
+    encoding: b64
+    content: %s
   - path: /usr/local/bin/sudo
     permissions: '0755'
     encoding: b64
@@ -651,7 +657,7 @@ write_files:
     content: %s
 runcmd:
   - [/bin/sh, /usr/local/sbin/pcvm-firstboot]
-	`, hostname, encode(autologin), encode(ready), encode(sudoCompat), encode(firstBoot))) + "\n"
+	`, hostname, encode(autologin), encode(ready), encode(localReady), encode(sudoCompat), encode(firstBoot))) + "\n"
 }
 
 func vmGuestReadyScript() string {
@@ -669,7 +675,17 @@ for candidate in $active_consoles ttyAMA0 ttyS0; do
     esac
 done
 [ -n "$console" ] || exit 1
-printf '%s\n' '[PCVM-GUEST] READY' > "/dev/$console"
+boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+[ -n "$boot_id" ] || exit 1
+guard="/run/pcvm-ready.$boot_id.once"
+if mkdir "$guard" 2>/dev/null; then
+    if printf '%s\n' '[PCVM-GUEST] READY' > "/dev/$console"; then
+        exit 0
+    fi
+    rmdir "$guard" 2>/dev/null || true
+    exit 1
+fi
+exit 0
 `
 }
 
