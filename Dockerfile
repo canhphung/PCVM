@@ -54,29 +54,37 @@ RUN test "$TARGETARCH" = "amd64" \
 
 FROM common AS vm
 ARG TARGETARCH
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends genisoimage qemu-utils \
+RUN printf '%s\n' 'deb http://deb.debian.org/debian bookworm-backports main' > /etc/apt/sources.list.d/bookworm-backports.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends genisoimage \
+    && apt-get install -y --no-install-recommends -t bookworm-backports qemu-utils \
     && if [ "$TARGETARCH" = "amd64" ]; then \
-         apt-get install -y --no-install-recommends ovmf qemu-system-x86; \
+         apt-get install -y --no-install-recommends ovmf \
+         && apt-get install -y --no-install-recommends -t bookworm-backports qemu-system-x86; \
        else \
-         apt-get install -y --no-install-recommends qemu-efi-aarch64 qemu-system-arm; \
+         apt-get install -y --no-install-recommends qemu-efi-aarch64 \
+         && apt-get install -y --no-install-recommends -t bookworm-backports qemu-system-arm; \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
 FROM native-runtime AS full
 ARG TARGETARCH
-RUN apt-get update \
+RUN printf '%s\n' 'deb http://deb.debian.org/debian bookworm-backports main' > /etc/apt/sources.list.d/bookworm-backports.list \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
        apache2 g++ gcc genisoimage git libgssapi-krb5-2 libicu72 libncursesw6 libpulse0 libsqlite3-0 libunwind8 make \
-       nginx-light qemu-utils xz-utils \
+       nginx-light xz-utils \
+    && apt-get install -y --no-install-recommends -t bookworm-backports qemu-utils \
     && a2enmod proxy proxy_http headers \
     && if [ "$TARGETARCH" = "amd64" ]; then \
          dpkg --add-architecture i386 \
          && apt-get update \
          && apt-get install -y --no-install-recommends \
-            libc6:i386 libatomic1:i386 lib32gcc-s1 lib32stdc++6 ovmf qemu-system-x86; \
+            libc6:i386 libatomic1:i386 lib32gcc-s1 lib32stdc++6 ovmf \
+         && apt-get install -y --no-install-recommends -t bookworm-backports qemu-system-x86; \
        else \
-         apt-get install -y --no-install-recommends qemu-efi-aarch64 qemu-system-arm; \
+         apt-get install -y --no-install-recommends qemu-efi-aarch64 \
+         && apt-get install -y --no-install-recommends -t bookworm-backports qemu-system-arm; \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
