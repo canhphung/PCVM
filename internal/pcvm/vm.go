@@ -589,18 +589,29 @@ exec /usr/bin/doas "$@"
 `
 	firstBoot := `#!/bin/sh
 set -eu
+active_consoles="$(cat /sys/class/tty/console/active 2>/dev/null || true)"
+console=
+for candidate in $active_consoles ttyAMA0 ttyS0; do
+    case "$candidate" in
+        ttyAMA0|ttyS0)
+            if [ -c "/dev/$candidate" ]; then
+                console="$candidate"
+                break
+            fi
+            ;;
+    esac
+done
+[ -n "$console" ]
 mkdir -p /etc/doas.d
 rm -f /etc/doas.conf /etc/doas.d/*.conf
 printf '%s\n' 'permit nopass pcvm as root' > /etc/doas.conf
 chmod 0400 /etc/doas.conf
-for console in ttyS0 ttyAMA0; do
-    line="$console::respawn:/sbin/getty -n -l /usr/local/sbin/pcvm-autologin -L $console 115200 vt100"
-    if grep -q "^$console::" /etc/inittab; then
-        sed -i "\\|^$console::|c\\$line" /etc/inittab
-    else
-        printf '%s\n' "$line" >> /etc/inittab
-    fi
-done
+line="$console::respawn:/sbin/getty -n -l /usr/local/sbin/pcvm-autologin -L $console 115200 vt100"
+if grep -q "^$console::" /etc/inittab; then
+    sed -i "\\|^$console::|c\\$line" /etc/inittab
+else
+    printf '%s\n' "$line" >> /etc/inittab
+fi
 passwd -l root >/dev/null 2>&1 || true
 passwd -l alpine >/dev/null 2>&1 || true
 kill -HUP 1
@@ -717,15 +728,7 @@ func stabilizeARMTCGResources(arch string, req Request, resources vmResources) v
 
 func qemuArguments(cfg Config, resources vmResources, code, qmp string) []string {
 	vmDir := filepath.Join(cfg.Home, "vm")
-	accel := "tcg,thread=multi"
-	if cfg.Arch == "arm64" && resources.CPUs == 1 {
-		// QEMU 7.2's multi-threaded AArch64 TCG can stall during Alpine's
-		// switch_root even with one guest CPU. A single TCG thread removes that
-		// race without reducing guest parallelism; explicit multi-vCPU VMs keep
-		// multi-threaded TCG.
-		accel = "tcg,thread=single"
-	}
-	args := []string{"-name", "PCVM", "-accel", accel, "-m", strconv.Itoa(resources.MemoryMB), "-smp", strconv.Itoa(resources.CPUs),
+	args := []string{"-name", "PCVM", "-accel", "tcg,thread=multi", "-m", strconv.Itoa(resources.MemoryMB), "-smp", strconv.Itoa(resources.CPUs),
 		"-display", "none", "-serial", "stdio", "-monitor", "none", "-qmp", "unix:" + qmp + ",server=on,wait=off",
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
 		"-drive", "if=pflash,format=raw,readonly=on,file=" + code,

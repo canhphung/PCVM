@@ -200,7 +200,7 @@ func TestAlpineCloudInitUsesOpenRCAndSerialAutologin(t *testing.T) {
 			decoded.Write(raw)
 		}
 	}
-	for _, script := range []string{"for console in ttyS0 ttyAMA0", "rm -f /etc/doas.conf /etc/doas.d/*.conf", "permit nopass pcvm as root", "[PCVM-GUEST] READY", `exec /usr/bin/doas /bin/ash -c "$@"`, `exec /usr/bin/doas /bin/ash -l "$@"`} {
+	for _, script := range []string{"ttyAMA0 ttyS0", "/sys/class/tty/console/active", `[ -c "/dev/$candidate" ]`, "rm -f /etc/doas.conf /etc/doas.d/*.conf", "permit nopass pcvm as root", "[PCVM-GUEST] READY", `exec /usr/bin/doas /bin/ash -c "$@"`, `exec /usr/bin/doas /bin/ash -l "$@"`} {
 		if !strings.Contains(decoded.String(), script) {
 			t.Fatalf("Alpine cloud-init missing encoded %q", script)
 		}
@@ -298,10 +298,6 @@ func TestQEMUArgumentsUseROMlessVirtioPCIOnARM64(t *testing.T) {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("ARM64 QEMU argv contains an unsupported device/ROM setting %q: %s", forbidden, joined)
 		}
-	}
-	oneCPU := strings.Join(qemuArguments(cfg, vmResources{MemoryMB: 1024, CPUs: 1}, "/usr/share/AAVMF/AAVMF_CODE.fd", "/home/container/vm/qmp.sock"), " ")
-	if !strings.Contains(oneCPU, "tcg,thread=single") || strings.Contains(oneCPU, "tcg,thread=multi") {
-		t.Fatalf("single-vCPU ARM64 QEMU must use stable single-threaded TCG: %s", oneCPU)
 	}
 }
 
